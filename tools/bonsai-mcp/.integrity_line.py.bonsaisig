@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M3J0SXA6Z8QZ5ZRXFJE2HPJ5",
+  "signer": "baisai",
+  "role": "owner",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-17T11:11:52Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/integrity_line.py",
+  "file-hash": "2d9e7cc39d995684aad3ae1ac9920a895fa905c499d27e9254fd0ecf364d9a86aad046ed131932d2fed65085ffd16b47b475ab44a3a0f5b0a8b23cb937748bc1",
+  "signature": "4sN92L3EFB/sRAcpGFdxH3aiEkAlxywCzEFtB+8++U2bIw2UrVsshMXX5wBaallyV3yi3GOVgs9xJgCh4dodCQ=="
+}

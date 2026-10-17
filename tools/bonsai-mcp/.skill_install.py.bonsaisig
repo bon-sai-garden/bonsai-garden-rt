@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M36HB5Q2S8KXW4T7NDR3YVBA",
+  "signer": "baisai",
+  "role": "owner",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-17T11:03:12Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/skill_install.py",
+  "file-hash": "f063db05fb19510e763abd441becb8d8a7a41c64ebb8940d2cd13e484b4d562c6734c9a4115e087cbac359b3eed67b58be594cc19e41a65bf3138545cbc05ba7",
+  "signature": "xUTpDxYmw3QpXzuQuD6sCRaFEb/F4HrEY9SIHNedlj/fbM0Dgwdoz70q5v+IELH7G97jF/AXFZ6r5+x5SiZxAQ=="
+}

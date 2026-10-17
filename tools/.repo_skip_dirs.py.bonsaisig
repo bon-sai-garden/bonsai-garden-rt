@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M3BT3Q6QKYCFK3DF2TGHQC5E",
+  "signer": "baisai",
+  "role": "custodian",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-17T09:49:21Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/repo_skip_dirs.py",
+  "file-hash": "c5531a9a287d9a30e5d9a1e32bb442ff55bda1ca97eeee404690e64f3125fd6e4dd1a6360f595998e1a192373970e3175b94a220e2670b0fcac6efa4aa5b9362",
+  "signature": "xPVYBLTBoVlg6yxWY/piT4zSYclOjB3Zm88CABDFV5ngpVAf8Ehrnh4o4Cs2SxvrNC0yV6/+sh9hQbP3o/iFAQ=="
+}

@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M4RNT99VAXNS5FHGTY8Y77JV",
+  "signer": "baisai",
+  "role": "owner",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-15T12:17:40Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/signer.py",
+  "file-hash": "3be34c27c39a3411163c889e15dfa33102b132f8e34031ac318400cd96594b33550d11799d0ed40a5f7192ccbb5827b459d78b72de6044649bd03664ad36aabb",
+  "signature": "0D9FMlhxtwpLTQQPNPJzv6PA957ysym1dry2kTc0CF2eQfI8s/FGItbcb+2m7+yFbqK76aYraDYp3GNk4yRHAw=="
+}

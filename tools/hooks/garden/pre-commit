@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// ---
+// id: 01M4KSMQVM9YTDH259CFGG9E3A
+// title: pre-commit for any garden's pot — ids and seals, through core, naming no garden
+// type: script
+// tended-by: baisai
+// created: 2026-10-10
+// updated: 2026-10-10
+// ---
+//
+// The commit gate rt installs in a new garden's pot,
+// wired by `keys.mjs install-runtime`, which sets the pot's core.hooksPath to this directory and
+// bonsai.core to the core (or seed) checkout it ran from. Two checks, each fails the commit, none
+// passes silently:
+//   1. ids    core's tools/ulid.py check --staged: no typed id, no id two documents share.
+//   2. seals  core's keys.mjs seal-staged --check: every staged file's seal verifies against the
+//             pot's own registry under core's seal-policy.json, and no owner seal claims a file
+//             credited to someone else. The fix it names: keys.mjs seal-staged --as <you> -- <paths>.
+// Core is found through the pot's local git config and checked by marker, never by a directory
+// name and never through an environment variable; a core that is not there refuses the commit (a
+// check that cannot run is not a pass). It names no garden, no kin, no host and no address.
+// `--no-verify` still bypasses git hooks: this is the courtesy gate, not the security boundary.
+//
+// CommonJS on purpose: git runs this file by its name, with no extension to say it is a module.
+'use strict';
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const MARKERS = ['skills/bonsai-garden-keys/bin/keys.mjs', 'skills/bonsai-garden-keys/lib/rt-manifest.mjs', 'tools/ulid.py'];
+
+function git(args, cwd) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+function refuse(lines) {
+  process.stderr.write(`pre-commit: refusing:\n  ${[].concat(lines).join('\n  ')}\n`);
+  process.exit(1);
+}
+
+const pot = git(['rev-parse', '--show-toplevel'], process.cwd());
+if (!pot) refuse('not inside a git repository');
+const core = git(['config', '--get', 'bonsai.core'], pot);
+if (!core) refuse(['this pot names no core (git config bonsai.core is unset); the gate cannot run without it.',
+  'run install-runtime again from your core: node <core>/skills/bonsai-garden-keys/bin/keys.mjs install-runtime --pot <this pot> --from <rt>']);
+const missing = MARKERS.filter((m) => !fs.existsSync(path.join(core, m)));
+if (missing.length) refuse([`bonsai.core points at ${core}, which is not a core: ${missing.join(', ')} not found.`, 'a check that cannot run is not a pass']);
+
+const failed = [];
+const run = (what, cmd, args) => {
+  const r = spawnSync(cmd, args, { cwd: pot, encoding: 'utf8' });
+  if (r.error) failed.push([what, `cannot run ${cmd} (${r.error.code}); a check that cannot run is not a pass`]);
+  else if (r.status !== 0) failed.push([what, `${r.stdout}${r.stderr}`.trim()]);
+};
+run('ids', 'python3', [path.join(core, 'tools', 'ulid.py'), 'check', '--staged', '--repo', pot]);
+run('seals', process.execPath, [path.join(core, 'skills', 'bonsai-garden-keys', 'bin', 'keys.mjs'), 'seal-staged', '--check', '--pot', pot]);
+for (const [name, out] of failed) process.stderr.write(`pre-commit ✗ ${name}\n${out}\n\n`);
+if (failed.length) {
+  process.stderr.write(`pre-commit: ${failed.length} check(s) refused this commit.\n`);
+  process.exit(1);
+}
+process.exit(0);

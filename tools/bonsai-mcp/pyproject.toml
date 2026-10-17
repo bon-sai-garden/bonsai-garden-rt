@@ -1,0 +1,19 @@
+[project]
+name = "bonsai-garden-mcp"
+version = "1.2.1"
+description = "Gated file access MCP for the bonsai-garden workshop repo."
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+authors = [
+    { name = "Baisai", email = "baisai@bon-sai.garden" }
+]
+license = { text = "UNLICENSED" }
+dependencies = [
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://bon-sai.garden"
+Repository = "https://github.com/bon-sai-garden/bonsai-garden-runtime"

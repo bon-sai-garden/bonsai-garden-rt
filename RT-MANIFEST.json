@@ -1,0 +1,146 @@
+{
+  "format": "bonsai-garden-rt-manifest/1",
+  "name": "bonsai-garden-rt",
+  "version": "0.8.3",
+  "upstream": {
+    "repo": "bonsai-garden-runtime",
+    "commit": "5b4b0eb00b6c3103abc46fbb7a35ab4d382eb2c5"
+  },
+  "files": [
+    {
+      "path": ".LICENSE.bonsaisig",
+      "sha256": "121e6533b01d4e0d1cfd60e1e5acbe84e89871fe9c892fc9908537d3f64824ae",
+      "bytes": 519
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe",
+      "bytes": 11360
+    },
+    {
+      "path": "README.md",
+      "sha256": "46fee1aafef37da43a11b20d78a2ac89f212bdb08a17992be4a019afa78a8503",
+      "bytes": 3364
+    },
+    {
+      "path": "tools/.repo_skip_dirs.py.bonsaisig",
+      "sha256": "936aa5591305bbf2e0beca2c7b3f88df7159b0001bb19e011721ba60e993c4bc",
+      "bytes": 535
+    },
+    {
+      "path": "tools/bonsai-mcp/.deployment_context.py.bonsaisig",
+      "sha256": "4b6da5451bc3c3b58daea98ae7a54c3c03d5a637b83e547cc933ded67c89ebee",
+      "bytes": 550
+    },
+    {
+      "path": "tools/bonsai-mcp/.garden-icon.png.bonsaisig",
+      "sha256": "2ea71ed8c4b4aa2d062bad8435c3353698ce5be2b8653683f2e7aaaabd24c83e",
+      "bytes": 544
+    },
+    {
+      "path": "tools/bonsai-mcp/.integrity_line.py.bonsaisig",
+      "sha256": "b793a14698dcd557c20a25b379174a84925613e20160bb5edbbb649bbdad059f",
+      "bytes": 542
+    },
+    {
+      "path": "tools/bonsai-mcp/.pyproject.toml.bonsaisig",
+      "sha256": "a037644b92d8529b32219f4056c0335ec26fa57140a87a164335be4e56ec2369",
+      "bytes": 543
+    },
+    {
+      "path": "tools/bonsai-mcp/.repo_routing.py.bonsaisig",
+      "sha256": "d03b500cf3460ec42081ba9e379f06932f1f163b60af54eb55abc6bf3a8f86fa",
+      "bytes": 540
+    },
+    {
+      "path": "tools/bonsai-mcp/.server.py.bonsaisig",
+      "sha256": "5182646822e7c2e1295cab7d9086b5f1632e0110e2ccd079d88550168d2a93fa",
+      "bytes": 534
+    },
+    {
+      "path": "tools/bonsai-mcp/.signer.py.bonsaisig",
+      "sha256": "2df003f602c01c28a607dcd0072c64ecf3a9577c2e183e4cce58cc90dfe2b225",
+      "bytes": 534
+    },
+    {
+      "path": "tools/bonsai-mcp/.skill_install.py.bonsaisig",
+      "sha256": "aef5c36f1b467c485c4f7706a1ef0c225a5e87651003e1037258d8a2d76279a1",
+      "bytes": 541
+    },
+    {
+      "path": "tools/bonsai-mcp/.uv.lock.bonsaisig",
+      "sha256": "435ce46ad537fa374910deeb3bf5e0eb35d9b80ccc94b8464e464fd91e522c64",
+      "bytes": 536
+    },
+    {
+      "path": "tools/bonsai-mcp/deployment_context.py",
+      "sha256": "300084957489d264837449b4882f816eeb9094285d967399aec96387afb27627",
+      "bytes": 7007
+    },
+    {
+      "path": "tools/bonsai-mcp/garden-icon.png",
+      "sha256": "db6fdb12d6b8e44ee0a979ea8dc7379b39d497d7e5307bd6d746bd9702ae4c24",
+      "bytes": 14971
+    },
+    {
+      "path": "tools/bonsai-mcp/integrity_line.py",
+      "sha256": "c5be82a790279c6dafae1e0ab480f11bfe8d787de5b053b0c5df28799e34261f",
+      "bytes": 16893
+    },
+    {
+      "path": "tools/bonsai-mcp/pyproject.toml",
+      "sha256": "db83b46b9d599557508fa1c86b4eb4576b00364d50a9ac85b3d8d95c2b879930",
+      "bytes": 490
+    },
+    {
+      "path": "tools/bonsai-mcp/repo_routing.py",
+      "sha256": "4f70bc2658067f785b0289c3c8d3ca986863bb84b9af66817205ea9bb1818810",
+      "bytes": 21994
+    },
+    {
+      "path": "tools/bonsai-mcp/server.py",
+      "sha256": "84f4c0e53ab04dab286ab6ed6d0273088d5b3449d27b8c7dcf35fcf39e4e7bd1",
+      "bytes": 217961
+    },
+    {
+      "path": "tools/bonsai-mcp/signer.py",
+      "sha256": "7599a515d0ef64e1e735bd5a50d3715a0a6484eef23c70768e968525a124708f",
+      "bytes": 9858
+    },
+    {
+      "path": "tools/bonsai-mcp/skill_install.py",
+      "sha256": "e493993a193a2824bc7cd88992cb972afa08c3881bb201a5f008ed1a7d588562",
+      "bytes": 12319
+    },
+    {
+      "path": "tools/bonsai-mcp/uv.lock",
+      "sha256": "494b0f347c0f661170fff3cb689c3700548a10a32f0aae557738e01bf926b3a2",
+      "bytes": 200112
+    },
+    {
+      "path": "tools/hooks/garden/.pre-commit.bonsaisig",
+      "sha256": "3c83c0288a689eab4d9e01ef1de2fca8ef44ebcfb581e49478e2283ce62fd345",
+      "bytes": 541
+    },
+    {
+      "path": "tools/hooks/garden/pre-commit",
+      "sha256": "ce45c1007d83cc2e2d42013d81b18d57c75d9e93389101def01631c8bdc30b71",
+      "bytes": 3392
+    },
+    {
+      "path": "tools/repo_skip_dirs.py",
+      "sha256": "07ba5dbd0c878e4da0cd4a9949f05e8f81536e92b4a3711166efde993b14a166",
+      "bytes": 1963
+    },
+    {
+      "path": "tools/rt/.doctor.mjs.bonsaisig",
+      "sha256": "8137d356247009e412c05c11d25d2568023e186d5e7ad6eed9927c9f4315b97f",
+      "bytes": 527
+    },
+    {
+      "path": "tools/rt/doctor.mjs",
+      "sha256": "cacd31a3f830ebf852a3ad16451068fd659d734bb995d6d7032b2cde377852c3",
+      "bytes": 11793
+    }
+  ]
+}

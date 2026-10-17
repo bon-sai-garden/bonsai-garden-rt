@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M4T5SB18ZA9KTTFQHYSEG4A1",
+  "signer": "baisai",
+  "role": "custodian",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-13T08:24:11Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/garden-icon.png",
+  "file-hash": "41c8cf98289e324caaf69ff7ca7a92f1d32a011607d88e351f96102bed5cb9ef4c22baaf460600e6b491fb01e43c1c597f5ad8c6976acba7ba610c6c8bae8f87",
+  "signature": "9UueYVg6gUNzCUsi58SijwqOAJ7bU0ok1yqbue8I7U4zlJYpfQJsKem5MbwsZGL4SaZIApcHv10vbTVFc3JkAQ=="
+}

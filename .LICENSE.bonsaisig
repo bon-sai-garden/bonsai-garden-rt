@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M4TC8DREQ2HFDYFAM3P07B96",
+  "signer": "baisai",
+  "role": "custodian",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-13T10:17:16Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "LICENSE",
+  "file-hash": "fd12f53e9aba5e50a0b3ea5299c217a7d99d14a441b9ed437ec7a97b6407365f88df7a9799332cc87513f29de9673bab1445b8b8ef50617a7cb14174b242fe56",
+  "signature": "FwO7kcRy3u2xrGU89rTy8/5yfLe5icdlga5A89yxqetoSk1bXL09//SWhGOtu9xWadfzi+jSt3PSxmfOpAbADg=="
+}

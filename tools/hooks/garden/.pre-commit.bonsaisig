@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M4KSSP0XK4BVNNMK1B6B53R8",
+  "signer": "baisai",
+  "role": "custodian",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-13T14:10:51Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/hooks/garden/pre-commit",
+  "file-hash": "1d8749d2a644412ee2c771792980b53edaa423843d73b211f1c57860aec38ce6c7716ea85073ae5639c93d0d41f077cb0d9de5c19b32dc0472c61bbdfcecb767",
+  "signature": "aOyjPEkLr6RJu2VY2gr+2gYbKSz1cVL71vJdyL3LMFy7mAJwv5cKwgNnxMunFg5j3LLMCuqNHjZpBbZgb5veCg=="
+}

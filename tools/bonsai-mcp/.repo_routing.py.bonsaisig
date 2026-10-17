@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M2DGQ4XKR7VWBN3E8HCFA2P6",
+  "signer": "baisai",
+  "role": "owner",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-17T11:03:11Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/repo_routing.py",
+  "file-hash": "b746aae6bd5f4f839a1d7662210e3cf0ee9b221557a9790de6a364a4879cec5121de1a75548bdd4e9774f94e1b5cb695ced5a3bfa31b739078f0269015998a4f",
+  "signature": "WszkfbL7gMy4GzScEgz+5e4XhIeGxtrS+lahozHkBYnu1YiLg7OSSdD8fkleyyQS5x3iawVZXHBOLGyiLzLPDw=="
+}

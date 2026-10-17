@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M4RXBEYZPM9AGKE8HVDC6R2Z",
+  "signer": "baisai",
+  "role": "custodian",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-12T20:37:33Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "tools/bonsai-mcp/uv.lock",
+  "file-hash": "3278e88466df254942718cef31c729d7f0578ba15a5fa1648abaca548deccbe8278a69f895c2a1509131224f91fe9aea7be6ace91cc89273d27ede852c86fcb9",
+  "signature": "uA0VoBK+UmVlHxPjuMrYAKTTXx0+jk0etM6zCFOlxCdWEuFdPI7KA9iQuBBKKlKg4gNUXwV3nwE2AWNyxFY6Aw=="
+}
