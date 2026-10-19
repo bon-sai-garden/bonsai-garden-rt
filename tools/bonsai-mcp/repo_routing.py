@@ -36,6 +36,17 @@ DESIGN — a moved path is never silently absent.
     "would write" and writing nothing. A read that quietly finds nothing is that
     same bug wearing another hat.
 
+DESIGN — one namespace per repo (the registry's 0.6.0, `source-repo`; the strip, 2026-10-18).
+
+    Every entry before 0.6.0 names a path in the hub (`current-path`). An entry that carries `source-repo`
+    naming another repo names a path in THAT repo, in `source-path`, and carries no `current-path`: a router
+    older than 0.6.0 reads every `current-path` in the hub's namespace, so an entry for runtime's
+    `tools/finder` written with one would route mono's `tools/finder` by it (longest prefix), silently. With
+    none, an old router skips it by construction. `resolve(path)` is the hub's namespace, unchanged;
+    `resolve_in(repo, path)` is another repo's. A path an entry has not moved resolves in its own repo and
+    says where it is bound (`bound_for`); an adopted one goes to its target, and a target that is itself
+    routed (the hub, or another repo's entry) is followed, never past a loop.
+
 Spec: rituals/specs/spec-garden-registry-v1.md
 """
 
@@ -80,6 +91,7 @@ class Resolution:
     path: Path  # the absolute resolved path
     rule: str | None  # the registry entry that matched, if any
     moved: bool  # True if the content is not in the served garden's own checkout (adopted elsewhere, or in a hub it is not)
+    bound_for: str | None = None  # a pending entry's destination, "<repo>:<path>": where it goes, said before it moves
 
 
 class PathRetired(Exception):
@@ -140,6 +152,10 @@ class RegistryUnreadable(Exception):
     """
 
 
+class RoutingLoop(Exception):
+    """Adopted entries that send a path round in a circle: refused, never followed until something gives."""
+
+
 class Router:
     """Routes on a split registry. The table's `hub` (its 0.5.0) names the repo that holds every path with no `adopted`
     entry. Without one, the old reading holds: mono is the hub, or `served_root`, when the caller names the garden it
@@ -152,6 +168,7 @@ class Router:
         self.hub: str | None = None
         self.registry_path = Path(registry_path)
         self._rules: list[tuple[str, str, str, str]] = []  # (path, repo, target_path, status)
+        self._foreign: dict[str, list[tuple[str, str, str, str]]] = {}  # source-repo -> its rules (0.6.0)
         self._stamp: tuple[int, int] | None = None  # (mtime_ns, size)
         self._load(self.registry_path)
 
@@ -204,8 +221,41 @@ class Router:
     def _load(self, registry_path: Path) -> None:
         stamp = self._current_stamp()
         data = json.loads(registry_path.read_text(encoding="utf-8"))
+        hub = data.get("hub")
+        if hub is not None and not _is_slug(hub):
+            raise json.JSONDecodeError(f"`hub` must be one repo slug, not {hub!r}", "", 0)
+        hub_slug = hub or MONO_SLUG
         rules: list[tuple[str, str, str, str]] = []
+        foreign: dict[str, list[tuple[str, str, str, str]]] = {}
         for e in data.get("entries", []):
+            repo = e.get("source-repo")
+            if repo is not None and repo != hub_slug:
+                # 0.6.0: a path in another repo's namespace. Malformed is refused whole, as a bad `hub` is: an entry the
+                # router half-reads is a route nobody can see.
+                where = e.get("id") or e.get("source-path") or "?"
+                if not _is_slug(repo):
+                    raise json.JSONDecodeError(
+                        f"entry {where}: `source-repo` must be one repo slug, not {repo!r}", "", 0
+                    )
+                if e.get("current-path"):
+                    raise json.JSONDecodeError(
+                        f"entry {where}: from {repo}, it carries `current-path`, which every router older than 0.6.0 "
+                        "reads as a path in the hub; its path is `source-path`",
+                        "",
+                        0,
+                    )
+                sp = (e.get("source-path") or "").strip("/")
+                if not sp or ".." in Path(sp).parts:
+                    raise json.JSONDecodeError(f"entry {where}: from {repo}, it names no usable `source-path`", "", 0)
+                foreign.setdefault(repo, []).append(
+                    (
+                        sp,
+                        e.get("target-repo") or "",
+                        (e.get("target-path") or "").strip("/"),
+                        e.get("status") or "pending",
+                    )
+                )
+                continue
             src = e.get("current-path")
             if not src:
                 continue
@@ -230,12 +280,12 @@ class Router:
             )
         # Longest prefix first, so `agents/shared` beats `agents`.
         rules.sort(key=lambda r: len(r[0]), reverse=True)
-        hub = data.get("hub")
-        if hub is not None and not (isinstance(hub, str) and hub and "/" not in hub and hub not in (".", "..")):
-            raise json.JSONDecodeError(f"`hub` must be one repo slug, not {hub!r}", "", 0)
+        for rs in foreign.values():
+            rs.sort(key=lambda r: len(r[0]), reverse=True)
         # Swap in only after a clean parse: a half-built table is worse than
         # the old one, and this way a failed reload cannot leave a torn state.
         self._rules = rules
+        self._foreign = foreign
         self.hub = hub
         self._stamp = stamp
 
@@ -275,24 +325,94 @@ class Router:
         if rule is None or status != "adopted":
             # No rule, or not moved yet (pending / distributed / skipped): the hub still holds it.
             hub_root = self.mono_root
+            bound = _bound(rule, path) if status == "pending" else None
             if self.hub_is_served():
                 return Resolution(
-                    self.hub or MONO_SLUG, hub_root, (hub_root / path).resolve(), rule[0] if rule else None, moved=False
+                    self.hub or MONO_SLUG,
+                    hub_root,
+                    (hub_root / path).resolve(),
+                    rule[0] if rule else None,
+                    moved=False,
+                    bound_for=bound,
                 )
             # Served from elsewhere (the origin's pot): the hub is a sibling checkout, and a path in it is not the
             # served garden's own. Missing, it is a refusal that names it, never a read of the served garden instead.
             if not hub_root.is_dir():
                 raise PathHasMoved(path, self.hub, hub_root)
-            return Resolution(self.hub, hub_root, (hub_root / path).resolve(), rule[0] if rule else None, moved=True)
+            return Resolution(
+                self.hub, hub_root, (hub_root / path).resolve(), rule[0] if rule else None, moved=True, bound_for=bound
+            )
 
         src, repo, target, _ = rule
         suffix = path.strip("/")[len(src) :].lstrip("/")
+        if repo in self._foreign:
+            # the target repo has entries of its own (0.6.0): the path may have moved on from there; follow it
+            res = self._resolve_foreign(repo, f"{target}/{suffix}" if suffix else target, hops=1)
+            return Resolution(res.repo, res.root, res.path, src, moved=True, bound_for=res.bound_for)
         root = self.repos_root / repo
         if not root.is_dir():
             raise PathHasMoved(path, repo, root)
         return Resolution(
             repo, root, (root / target / suffix).resolve() if suffix else (root / target).resolve(), src, moved=True
         )
+
+    def resolve_in(self, repo: str, path: str) -> Resolution:
+        """Resolve a path in `repo`'s own namespace (0.6.0, `source-repo`). The hub's namespace is resolve()'s,
+        unchanged: resolve_in(<the hub>, p) is resolve(p)."""
+        if ".." in Path(path).parts:
+            raise ValueError(f"Path '{path}' contains parent traversal, which is not allowed.")
+        self._maybe_reload()
+        if repo == (self.hub or MONO_SLUG):
+            return self.resolve(path)
+        if not _is_slug(repo):
+            raise ValueError(f"'{repo}' is not a repo slug")
+        return self._resolve_foreign(repo, path, hops=0)
+
+    def _resolve_foreign(self, repo: str, path: str, hops: int) -> Resolution:
+        p = path.strip("/")
+        rule = next((r for r in self._foreign.get(repo, []) if p == r[0] or p.startswith(r[0] + "/")), None)
+        status = rule[3] if rule else "pending"
+        if status == "archived":
+            raise PathArchived(f"{repo}:{p}", rule[1] or "the archive")
+        if status == "dropped":
+            succ = _bound(rule, p)
+            raise PathDropped(p, f"in {repo}" + (f"; its successor: {succ}" if succ else ""))
+        if rule is None or status != "adopted":
+            # not moved yet (or no entry): the repo itself still holds it, and a pending entry says where it is bound
+            root = self.repos_root / repo
+            if not root.is_dir():
+                raise PathHasMoved(p, repo, root)
+            bound = _bound(rule, p) if status == "pending" else None
+            return Resolution(repo, root, (root / p).resolve(), rule[0] if rule else None, moved=False, bound_for=bound)
+        src, trepo, target, _ = rule
+        if not trepo or not target:
+            raise PathHasMoved(p, trepo or "(no target named)", self.repos_root / (trepo or "?"))
+        suffix = p[len(src) :].lstrip("/")
+        tpath = f"{target}/{suffix}" if suffix else target
+        if hops >= 8:
+            raise RoutingLoop(f"'{repo}:{p}' is still being routed after 8 hops: the adopted entries form a loop")
+        if trepo == (self.hub or MONO_SLUG):
+            res = self.resolve(tpath)
+        elif trepo in self._foreign:
+            res = self._resolve_foreign(trepo, tpath, hops + 1)
+        else:
+            root = self.repos_root / trepo
+            if not root.is_dir():
+                raise PathHasMoved(p, trepo, root)
+            res = Resolution(trepo, root, (root / tpath).resolve(), src, moved=True)
+        return Resolution(res.repo, res.root, res.path, src, moved=True, bound_for=res.bound_for)
+
+
+def _is_slug(s) -> bool:
+    return isinstance(s, str) and bool(s) and "/" not in s and s not in (".", "..")
+
+
+def _bound(rule: tuple[str, str, str, str] | None, path: str) -> str | None:
+    """`<repo>:<path>`: where a rule sends `path`, or None when the rule names no target."""
+    if not rule or not rule[1] or not rule[2]:
+        return None
+    suffix = path.strip("/")[len(rule[0]) :].lstrip("/")
+    return f"{rule[1]}:{rule[2]}/{suffix}" if suffix else f"{rule[1]}:{rule[2]}"
 
 
 def _self_test() -> int:
@@ -514,6 +634,38 @@ def _self_test() -> int:
             rl.resolve("lore/a.md")
         rl._load = _orig
         check("an unchanged registry is not reloaded on every resolve", loads == [])
+
+    # --- 0.6.0: an entry from another repo routes that repo's path, never the hub's (test_source_repo_routing.py
+    # holds the rest) --------------------------------------------------------------------------------------------
+    with tempfile.TemporaryDirectory() as td4:
+        for repo in (MONO_SLUG, "rx", "px"):
+            (Path(td4) / repo).mkdir()
+        reg4 = Path(td4) / "src.json"
+        reg4.write_text(
+            json.dumps(
+                {
+                    "hub": MONO_SLUG,
+                    "entries": [
+                        {
+                            "source-repo": "rx",
+                            "source-path": "tools/finder",
+                            "type": "dir",
+                            "target-repo": "px",
+                            "target-path": "tools/finder",
+                            "status": "pending",
+                        },
+                    ],
+                }
+            )
+        )
+        rs = Router(reg4, repos_root=Path(td4))
+        own = rs.resolve_in("rx", "tools/finder/app.swift")
+        check(
+            "a pending entry from another repo resolves there, bound for its target",
+            own.repo == "rx" and not own.moved and own.bound_for == "px:tools/finder/app.swift",
+        )
+        hub = rs.resolve("tools/finder/app.swift")
+        check("… and never routes the hub's path of the same name", hub.repo == MONO_SLUG and hub.rule is None)
 
     print(f"\n  {len(fails)} failure(s)")
     return 1 if fails else 0

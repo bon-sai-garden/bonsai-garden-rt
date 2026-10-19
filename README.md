@@ -4,24 +4,25 @@ title: "rt — the runtime a new garden's pot installs"
 type: readme
 tended-by: baisai
 created: 2026-10-10
-updated: 2026-10-17
+updated: 2026-10-19
 ---
 
 # rt — the runtime a new garden's pot installs
 
-rt is the part of a garden that sits in its pot's commit path and looks at the host. It is cut from a larger runtime by a generator, and every file in it is listed with its sha256 in `RT-MANIFEST.json`, together with the upstream commit it was cut from.
+rt is the part of a garden that sits in its pot's commit path and looks at the host. It is cut from a larger runtime by a generator, and every file in it is listed with its sha256 in `RT-MANIFEST.json`, together with the upstream commit it was cut from. The manifest is sealed by its owner (`.RT-MANIFEST.json.bonsaisig`), the one file the manifest does not list.
 
-It holds three things:
+It holds four things:
 
 | Path | What |
 |---|---|
 | `tools/hooks/garden/pre-commit` | the commit gate: ids and seals, checked through core |
 | `tools/rt/doctor.mjs` | the doctor: is this host and this pot set up to commit, seal and verify on core and rt alone |
-| `tools/bonsai-mcp/` | the garden MCP: the server a pot's sessions read and write the garden through, launched from the pot's own folder |
+| `tools/rt/host-service.mjs` | the garden MCP as a service on this host: installed once, registered once at user level under the garden's own name, probed, and taken back |
+| `tools/bonsai-mcp/` | the garden MCP: the server a pot's sessions read and write the garden through |
 
 ## Installing it
 
-rt is not installed by hand. The garden's core installs it, verifies every byte against the pin core carries, and wires the pot to it:
+rt is not installed by hand. The garden's core installs it and wires the pot to it, and takes it only when every byte matches the manifest, the version is at or above the oldest rt that core takes (its `rt-minimum.json`), and the published keys vouch for the owner's seal on the manifest. Core names no rt by hash: any rt that meets those three is taken.
 
 ```bash
 node <core>/skills/bonsai-garden-keys/bin/keys.mjs install-runtime --pot <your pot> --from <this rt, a path or a URL>
@@ -41,23 +42,31 @@ rt ships no tests. Every shipped script is tested upstream, in the runtime it is
 
 | Shipped | Tested upstream by |
 |---|---|
-| `tools/bonsai-mcp/server.py` | `tools/bonsai-mcp/test.py`, `test_home_working_state.py`, `test_session_start_loop.py`, `test_write_routing.py`, `test_pot_hub_routing.py`, `test_server_port.py`, the repro gates |
-| `tools/bonsai-mcp/signer.py` | `test_signer_gate.py`, `test_commit_broker.py` |
+| `tools/bonsai-mcp/server.py` | `tools/bonsai-mcp/test.py`, `test_shared_context_parts.py`, `test_home_working_state.py`, `test_session_start_loop.py`, `test_write_routing.py`, `test_pot_hub_routing.py`, `test_server_port.py`, `test_server_tree.py`, the repro gates |
+| `tools/bonsai-mcp/signer.py` | `test_signer_gate.py`, `test_integrity_pot.py`, `test_dryrun_fixes.py` |
 | `tools/bonsai-mcp/integrity_line.py` | `test_integrity_line.py`, `test_integrity_pot.py`, `test_integrity_pins.py`, `test_instance_free.py` |
-| `tools/bonsai-mcp/repo_routing.py` | its own self-test (`python3 repo_routing.py`), `test_rt_scripts.py`, `test_write_routing.py`, `test_pot_hub_routing.py` |
+| `tools/bonsai-mcp/repo_routing.py` | its own self-test (`python3 repo_routing.py`), `test_source_repo_routing.py`, `test_rt_scripts.py`, `test_write_routing.py`, `test_pot_hub_routing.py` |
 | `tools/bonsai-mcp/deployment_context.py` | `test_rt_scripts.py` |
 | `tools/bonsai-mcp/skill_install.py` | `test_rt_scripts.py` |
 | `tools/repo_skip_dirs.py` | `test_rt_scripts.py` |
-| `tools/rt/doctor.mjs` | `tools/rt/test-rt.mjs` |
+| `tools/rt/doctor.mjs` | `tools/rt/test-doctor.mjs`, `tools/rt/test-doctor-generated.mjs` |
+| `tools/rt/host-service.mjs` | `tools/rt/test-host-service.mjs`, `tools/rt/test-doctor.mjs` |
 
 ## Installing the garden MCP
 
-`install-runtime` writes the pot's `.mcp.json` (host-local, ignored by git): the server is run by `uv` from the installed rt with `--garden <your pot>`, its Python environment outside rt, so rt stays exactly its manifest. It serves that one garden. A garden whose content still lives in more than one repository names them in its own routing table (`rituals/repo/repo-split-registry.json`, with its `hub`), and the server reads each path where the table says, labelled with the repository's name.
+The garden MCP runs as a service on this host, once the garden has its keys (garden.json) and its registry, and it is registered once, at user level, under the garden's own name:
+
+```bash
+node <rt>/tools/rt/host-service.mjs install --pot <your pot>
+node <rt>/tools/rt/host-service.mjs probe   --pot <your pot>
+```
+
+`install` runs the server on `127.0.0.1`, one port and one name per garden (`<garden name>-garden`), under PM2 where PM2 is present, else a LaunchAgent on macOS; a Linux host without PM2 is told that its launcher is owed. The server is run by `uv` from the installed rt with `--garden <your pot>`, its Python environment and bytecode outside rt, so rt stays exactly its manifest. It registers the service with `claude mcp add --scope user --transport http`, retires a per-session garden entry from the pot's `.mcp.json` (the desktop app drops such a server after one turn), and links each kin's skill into the pot (`.claude/skills/<slug>`, local only). A second run changes nothing. `probe` says *connected* or *not connected* (and which: not installed, not running, not registered, turned off for this pot, shadowed), and then each kin's integrity line through the service: `ok`, or the STOP it answered. `uninstall` is the way back. It serves that one garden. A garden whose content still lives in more than one repository names them in its own routing table (`rituals/repo/repo-split-registry.json`, with its `hub`), and the server reads each path where the table says, labelled with the repository's name.
 
 ## What it does not do
 
-It captures no transcripts and holds no key. The server runs only when a session of the pot starts it, and reads no repository but the garden's own, those its routing table names, and the core the pot is wired to. Seals are made by core, with the key the garden's own salt derives; rt checks them at commit time and when a session starts.
+It captures no transcripts and holds no key. The server runs as this host's service for the garden, answers only on `127.0.0.1`, and reads no repository but the garden's own, those its routing table names, and the core the pot is wired to. Seals are made by core, with the key the garden's own salt derives; rt checks them at commit time and when a session starts.
 
 ## This release
 
-0.8.3. Seed and rt are released together under one version.
+0.8.4, the first whose manifest is sealed. Seed and rt are released together under one version.

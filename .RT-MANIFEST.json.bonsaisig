@@ -1,0 +1,12 @@
+{
+  "format": "bonsaisig/2",
+  "id": "01M59TJPX5TVSD91JJJBT93YB5",
+  "signer": "baisai",
+  "role": "owner",
+  "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
+  "timestamp": "2026-10-19T10:16:10Z",
+  "algorithm": "ed25519+blake2b512",
+  "target": "RT-MANIFEST.json",
+  "file-hash": "5f50ca76031c9f2ccb11fd1d59888433400be1a39766b12abb91c2bc888dd09fcb54f18b7750f2a28bd1203763fae88a43922786d2d3b48a0ab561a736c81b81",
+  "signature": "wNpAir7qiJR7aYMn2rgm2ylw8nHzQC/BaZwr5WBwnJnuFgEx4D6+oxrLrD5JMH8IF7mgghmNvzbztvNMbmKiBw=="
+}

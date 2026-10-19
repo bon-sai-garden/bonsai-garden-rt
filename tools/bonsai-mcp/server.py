@@ -5,7 +5,7 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-13
-# updated: 2026-10-17
+# updated: 2026-10-19
 # copyright: © 2026 Bonsai Garden · bon-sai.garden
 # ---
 """
@@ -49,7 +49,7 @@ Tools (14):
     bonsai_validate_metadata  Run tools/validate-metadata.py
     bonsai_find_by_id         Find a file by its ULID frontmatter id
     bonsai_session_start      Load handover + working-state in one call
-    bonsai_get_shared_context Load workshop-context + codex + routines in one call
+    bonsai_get_shared_context Load workshop-context + codex + routines in one call, or in parts
 
 Schema shape:
     Each tool exposes its arguments as top-level JSON-schema properties
@@ -117,18 +117,33 @@ REPO_ROOT: Path = Path(_env_root).resolve()
 # a gate or a write that reached sign.py through the served root could never serve it. Found by marker, never by
 # counting directory levels, and never from $BONSAI_GARDEN: this is not a fallback for the served garden (there is
 # none), it is where the daemon's own code lives. Today it is the mono checkout; when the runtime serves, the runtime.
-def _find_server_root() -> Path:
-    for d in Path(__file__).resolve().parents:
-        # mono (tools/sign.py), a runtime checkout (tools/rt/rt-slice.json) or an installed rt (RT-MANIFEST.json): the tree the daemon runs from
-        if (
-            (d / "tools" / "sign.py").is_file()
-            or (d / "tools" / "rt" / "rt-slice.json").is_file()
-            or (d / "RT-MANIFEST.json").is_file()
-        ):
+# A runtime checkout is known by the commit hook every garden repo runs from it (tools/hooks/git/pre-commit: edited in
+# place, never moved), not by rt's slice: the slice is release machinery and leaves for the pot's build-process/ (the
+# strip, 2026-10-18), and a daemon run from runtime must not stop starting the day it does.
+SERVER_ROOT_MARKERS = (
+    ("mono", "tools/sign.py"),
+    ("a runtime checkout", "tools/hooks/git/pre-commit"),
+    ("an installed rt", "RT-MANIFEST.json"),
+)
+
+
+def _server_root_from(start: Path) -> Path | None:
+    """The nearest directory above `start` holding one of SERVER_ROOT_MARKERS, or None."""
+    for d in Path(start).resolve().parents:
+        if any((d / rel).is_file() for _, rel in SERVER_ROOT_MARKERS):
             return d
-    sys.exit(
-        f"bonsai-mcp: refusing to start — no mono (tools/sign.py), runtime (tools/rt/rt-slice.json) or rt (RT-MANIFEST.json) above {Path(__file__).resolve()}: the daemon cannot find its own tree"
-    )
+    return None
+
+
+def _find_server_root() -> Path:
+    found = _server_root_from(Path(__file__))
+    if found is None:
+        sys.exit(
+            "bonsai-mcp: refusing to start — no "
+            + ", ".join(f"{what} ({rel})" for what, rel in SERVER_ROOT_MARKERS)
+            + f" above {Path(__file__).resolve()}: the daemon cannot find its own tree"
+        )
+    return found
 
 
 SERVER_ROOT: Path = _find_server_root()
@@ -4253,7 +4268,8 @@ def _session_start_blocking(agent_slug: str, verbose: bool, ctx: Context | None)
         sections.append(
             f"=== {slug} / working-state === "
             f"ERROR: '{slug}' is not a recognized agent in agents/registry.json. "
-            f"Check for a typo, or register it first with tools/add-agent.sh."
+            f"Check for a typo. A kin is registered by its planting (core's rite), which writes its row in the "
+            f"garden's agents/registry.json; nothing here registers one."
         )
     elif slug:
         # Registry-derived root — never a hardcoded
@@ -4477,10 +4493,20 @@ async def bonsai_get_shared_context(
         str,
         Field(description="Session token from bonsai_session_start (required on SSE/HTTP transport)."),
     ] = "",
+    part: Annotated[
+        int,
+        Field(
+            description=(
+                "The layer comes back in parts when it is longer than one answer may be "
+                "(BONSAI_SHARED_CONTEXT_PART_BUDGET chars, default 30000). 0 (default): the whole layer when it fits, "
+                "else part 1, which says how many there are. 1..N: that part. Each part names the next."
+            ),
+        ),
+    ] = 0,
     ctx: Context | None = None,
 ) -> str:
     """
-    Return the workshop's shared context layer in one payload.
+    Return the workshop's shared context layer in one payload, or in parts when it is longer than one answer.
 
     Replaces three separate bonsai_read_file calls with a single round-trip.
     Call once per session immediately after bonsai_session_start, before reading
@@ -4573,7 +4599,51 @@ async def bonsai_get_shared_context(
             continue
         sections.append(f"=== {label}: {rel_path} ===\n{text}")
 
-    return "\n\n".join(sections)
+    return _shared_context_part("\n\n".join(sections), part, include_cosmology, digest)
+
+
+# W's audit of the third dry run (F-11, 2026-10-18): a planted pot's layer (its codex and covenant, core's routines)
+# came back as ~63k characters in one answer, over the harness's tool-output limit, so the kin had to page a file for
+# its own start context. Above the budget the layer comes back in parts: consecutive slices of the one text, cut at a
+# section boundary where one falls in the second half of the window, else at a line end; nothing summarised, nothing
+# dropped, and the parts concatenated are the layer byte for byte.
+_SHARED_PART_BUDGET = int(os.environ.get("BONSAI_SHARED_CONTEXT_PART_BUDGET") or 30000)
+_SHARED_PART_FRAME = 400  # room for each part's header and footer inside the budget
+
+
+def _shared_context_slices(text: str, room: int) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while len(text) - i > room:
+        window = text[i : i + room]
+        cut = window.rfind("\n\n=== ")
+        if cut < room // 2:
+            cut = window.rfind("\n")
+        if cut <= 0:
+            cut = room
+        out.append(text[i : i + cut])
+        i += cut
+    out.append(text[i:])
+    return out
+
+
+def _shared_context_part(text: str, part: int, include_cosmology: bool, digest: bool) -> str:
+    budget = max(2000, _SHARED_PART_BUDGET)
+    if part == 0 and len(text) <= budget:
+        return text
+    slices = _shared_context_slices(text, budget - _SHARED_PART_FRAME)
+    n = len(slices)
+    k = 1 if part == 0 else part
+    if not 1 <= k <= n:
+        return f"part {part}: this shared context has {n} part(s), 1 to {n}"
+    flags = "".join([", include_cosmology=True" if include_cosmology else "", "" if digest else ", digest=False"])
+    head = f"=== shared context, part {k} of {n} ({len(text)} chars in all, in parts under {budget} each) ===\n"
+    foot = (
+        f"\n\n=== end of part {k} of {n}: continue with bonsai_get_shared_context(part={k + 1}{flags}) ==="
+        if k < n
+        else f"\n\n=== end of part {k} of {n}: the last part ==="
+    )
+    return head + slices[k - 1] + foot
 
 
 # ---------------------------------------------------------------------------

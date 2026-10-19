@@ -5,7 +5,7 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-10
-// updated: 2026-10-17
+// updated: 2026-10-18
 // ---
 //
 //   node <rt>/tools/rt/doctor.mjs --pot <dir> [--attribution <record>]
@@ -19,10 +19,16 @@
 // The pot's doctor, and only it. Each
 // check prints one line, `ok`, `FAIL` or `note`, with what it saw; the exit is 1 when any check
 // fails, else 0. It reads and hashes; it writes nothing, seals nothing, asks no secret and calls no
-// network. What it needs from core (the manifest reader, the verifier) it imports from the core the
+// network but this host's own loopback, to ask the garden's MCP whether it answers (its host service, 2026-10-19). What it
+// needs from core (the manifest reader, the verifier) it imports from the core the
 // pot names in its local git config (bonsai.core), a down edge; it never reaches for a garden by a
 // directory name or an environment variable, and it fails when $BONSAI_GARDEN points anywhere but
 // the pot.
+//
+// The garden MCP (host-service.mjs beside this file, one reading shared with its probe): before the service is installed
+// (planting §8, after the keys) the doctor notes it and does not fail; once this host holds the garden's service record,
+// every part of "connected" is a check: the launcher runs it, it answers on its port, it is registered at user level, it
+// is not turned off for this pot, and no per-session entry in the pot shadows it. A kin's integrity is the probe's to ask.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -172,44 +178,51 @@ ok('core', `${core} (found by marker)`);
 const M = await import(pathToFileURL(path.join(core, 'skills', 'bonsai-garden-keys', 'lib', 'rt-manifest.mjs')).href);
 const PV = await import(pathToFileURL(path.join(core, 'skills', 'bonsai-garden-keys', 'lib', 'pot-verdict.mjs')).href); // the one reader of a pot's own lab-preview switch
 
-// 4. rt: its files against the pot's pin
+// 4. rt: its files against the pot's install record (runtime.json), and core's minimum
 if (!rt) {
   fail('rt', 'this doctor is not inside an rt checkout (no RT-MANIFEST.json above it)');
   report();
 }
-const potPinFile = path.join(pot, 'runtime.json');
-let potPin = null;
+const potRecordFile = path.join(pot, 'runtime.json');
+let potRecord = null;
 try {
-  potPin = M.readPin(potPinFile);
+  potRecord = M.readRecord(potRecordFile);
 } catch (e) {
-  fail('pin', `the pot's runtime.json: ${e.message}`);
+  fail('record', `the pot's runtime.json: ${e.message}`);
 }
-if (potPin) {
-  const v = M.verifyTree(rt, potPin);
+if (potRecord) {
+  const v = M.verifyTree(rt, potRecord);
   if (v.ok)
     ok(
       'rt',
-      `${rt}: ${v.manifest.name} ${v.manifest.version}, cut from ${v.manifest.upstream.repo} ${v.manifest.upstream.commit.slice(0, 12)}; every file matches the pot's pin`,
+      `${rt}: ${v.manifest.name} ${v.manifest.version}, cut from ${v.manifest.upstream.repo} ${v.manifest.upstream.commit.slice(0, 12)}; every file matches what the pot recorded`,
     );
-  else fail('rt', `${rt} is not the rt this pot pinned: ${v.problems.map((p) => `${p.kind}: ${p.what}`).join('; ')}`);
-  if (potPin['rt-commit'] && fs.existsSync(path.join(rt, '.git'))) {
+  else fail('rt', `${rt} is not the rt this pot recorded: ${v.problems.map((p) => `${p.kind}: ${p.what}`).join('; ')}`);
+  if (potRecord['rt-commit'] && fs.existsSync(path.join(rt, '.git'))) {
     const head = run('git', ['-C', rt, 'rev-parse', 'HEAD']).out;
-    (head === potPin['rt-commit'] ? ok : fail)(
+    (head === potRecord['rt-commit'] ? ok : fail)(
       'rt commit',
-      head === potPin['rt-commit'] ? head.slice(0, 12) : `rt is at ${head}, the pot pinned ${potPin['rt-commit']}`,
+      head === potRecord['rt-commit']
+        ? head.slice(0, 12)
+        : `rt is at ${head}, the pot recorded ${potRecord['rt-commit']}`,
     );
   }
+  // core takes an rt by a minimum version, never by a hash it pins (2026-10-18): this pot's rt must be at or above it,
+  // or the garden MCP's exec gate (signer.py) refuses to serve from it
   try {
-    const corePin = M.readPin(path.join(core, 'skills', 'bonsai-garden-keys', 'rt-pin.json'));
-    if (corePin['manifest-sha256'] === potPin['manifest-sha256'])
-      ok('core pin', `core expects the same rt (${corePin.version})`);
+    const min = M.readMinimum(path.join(core, 'skills', 'bonsai-garden-keys', 'rt-minimum.json'));
+    if (potRecord.name === min.name && M.atLeast(potRecord.version, min['min-version']))
+      ok(
+        'core minimum',
+        `core takes ${min.name} ${min['min-version']} or newer; this pot's rt is ${potRecord.version}`,
+      );
     else
-      note(
-        'core pin',
-        `core now ships rt ${corePin.version}; this pot is pinned to ${potPin.version}. install-runtime again to move, by your choice`,
+      fail(
+        'core minimum',
+        `core takes ${min.name} ${min['min-version']} or newer; this pot's rt is ${potRecord.name} ${potRecord.version}: install-runtime --upgrade --from <a newer rt>`,
       );
   } catch (e) {
-    note('core pin', `core carries no readable rt pin (${e.message})`);
+    fail('core minimum', `core carries no readable rt minimum (${e.message}); no rt can be taken`);
   }
 }
 
@@ -277,5 +290,34 @@ if (!fs.existsSync(reg)) {
     );
   else if (gen.why) note('generated', gen.why);
   if (softened) note('test keys', PV.labNote(softened));
+}
+
+// 7. the garden MCP on this host: one reading, the probe's (host-service.mjs beside this file)
+let HS = null;
+try {
+  HS = await import(new URL('./host-service.mjs', import.meta.url).href);
+} catch (e) {
+  fail(
+    'mcp service',
+    `this rt carries no readable tools/rt/host-service.mjs (${e.code || e.message}): the garden MCP cannot be installed or checked from it`,
+  );
+}
+if (HS) {
+  const hctx = HS.doctorContext(pot);
+  let facts = null;
+  try {
+    facts = HS.potFacts(hctx);
+  } catch (e) {
+    note('mcp service', `not checked: ${e.message}`);
+  }
+  if (facts) {
+    const { rows } = await HS.connectionRows(hctx, facts);
+    for (const [s, w, d, kind] of rows) {
+      if (s === 'FAIL' && kind === 'not installed') note(w, `${d} (planting §8, after the keys and the pins)`);
+      else if (s === 'FAIL') fail(w, d);
+      else if (s === 'ok') ok(w, d);
+      else note(w, d);
+    }
+  }
 }
 report();
