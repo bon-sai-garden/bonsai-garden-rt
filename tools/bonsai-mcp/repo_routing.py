@@ -5,14 +5,14 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-13
-# updated: 2026-10-17
+# updated: 2026-10-21
 # copyright: © 2026 Bonsai Garden · bon-sai.garden
 # ---
 """repo_routing — resolve a repo-relative path to the repo that actually holds it.
 
-The keystone of the multi-repo split. Today the MCP resolves every path under a
-single REPO_ROOT; once `agents/` lives in pot and `lore/` in core, that
-assumption is wrong and every read goes blind.
+The keystone of a garden that spans several repositories. Without it the MCP
+resolves every path under a single REPO_ROOT; once `agents/` lives in the pot and
+`lore/` in core, that assumption is wrong and every read goes blind.
 
 DESIGN — routes on `status`, not on `target-repo`.
 
@@ -20,7 +20,7 @@ DESIGN — routes on `status`, not on `target-repo`.
     whether it has moved yet. Routing on the destination would break the garden
     the moment this module went live, because nothing has moved. Routing on
     `status` means this can ship today — every `pending` entry resolves to the
-    mono repo exactly as before — and each path starts routing elsewhere the
+    hub exactly as before — and each path starts routing elsewhere the
     moment its entry flips to `adopted`.
 
     No big-bang cutover, and the migration becomes reversible one entry at a
@@ -36,12 +36,12 @@ DESIGN — a moved path is never silently absent.
     "would write" and writing nothing. A read that quietly finds nothing is that
     same bug wearing another hat.
 
-DESIGN — one namespace per repo (the registry's 0.6.0, `source-repo`; the strip, 2026-10-18).
+DESIGN — one namespace per repo (the registry's 0.6.0, `source-repo`).
 
     Every entry before 0.6.0 names a path in the hub (`current-path`). An entry that carries `source-repo`
     naming another repo names a path in THAT repo, in `source-path`, and carries no `current-path`: a router
     older than 0.6.0 reads every `current-path` in the hub's namespace, so an entry for runtime's
-    `tools/finder` written with one would route mono's `tools/finder` by it (longest prefix), silently. With
+    `tools/finder` written with one would route the hub's `tools/finder` by it (longest prefix), silently. With
     none, an old router skips it by construction. `resolve(path)` is the hub's namespace, unchanged;
     `resolve_in(repo, path)` is another repo's. A path an entry has not moved resolves in its own repo and
     says where it is bound (`bound_for`); an adopted one goes to its target, and a target that is itself

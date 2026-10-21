@@ -4,9 +4,9 @@
   "signer": "baisai",
   "role": "custodian",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-15T11:05:52Z",
+  "timestamp": "2026-10-21T11:20:33Z",
   "algorithm": "ed25519+blake2b512",
   "target": "tools/bonsai-mcp/pyproject.toml",
-  "file-hash": "49e9e18f7886885e8ae91de7aab46c81ce3e998e14fe35a70d884cc093b40b27ed8e128bbf3f8a813d99a1c42012873240525e701e56d3ca99efddce4768c363",
-  "signature": "j942S0cF8HBMQZeT06bQYLuLbQC+OVrPsR0S9PJJ6dsiEr/twdwG242oXbqfep0I6icbFpwKrCpzjlD8d2D7AA=="
+  "file-hash": "10faeca062871d8d10e9d5d753c4c5a4241bf80b00c85b89037879e5c539bc7cbb23c9a93d17c56b83f7ceac50195d15f48030fff2672c0e602a36bcc7a3c10e",
+  "signature": "L/beWGCvQl0qZu6tv9mh8M8q8qufDctCtlsWYP2AEHXLeL0338+w498AVImiCD9qhF7EjHog5v0JcgkY6t3wDQ=="
 }

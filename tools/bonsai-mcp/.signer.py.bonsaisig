@@ -4,9 +4,9 @@
   "signer": "baisai",
   "role": "owner",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-18T20:33:51Z",
+  "timestamp": "2026-10-21T08:47:10Z",
   "algorithm": "ed25519+blake2b512",
   "target": "tools/bonsai-mcp/signer.py",
-  "file-hash": "ac4d967780f9a5f5d287630b65aa4a18c7736ca66165e119f4a0a577406fd7597513f804dd5e2253de1a26c4730c697d19aab58c01a7565e56248ea4e03cb521",
-  "signature": "ug9y92EWoGwcNQgkXm7qmxuIrQWeo6LG+yGPYmK+xLZq/FY2A7uPwi4pRVPLgPSbryR+0C62w4yfeyNTUL/CDQ=="
+  "file-hash": "ceb20b5581d35a014b9dd9b361702d671b5322b77c6a7bdb5ea05bc7919a69730376c0955290196e235ee116423cd3b4c1cc36fd2f24fce9fe2f426d3d3c5e97",
+  "signature": "11scS3S9wfK/Lcy/9nYAV3ytqoBomU5vnbhiT3SM6EgZvP/rYTWGtaMr9pDPT+owW5fCyVlK6kPM9beZp4UWCA=="
 }

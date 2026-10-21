@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # ---
 # id: 01M4RNT99VAXNS5FHGTY8Y77JV
-# title: signer — which signer a served garden is verified and sealed by (the seam between the daemon and mono's sign.py)
+# title: signer — which signer a served garden is verified and sealed by (the seam between the daemon and a garden's sign.py)
 # type: script
 # tended-by: baisai
 # created: 2026-10-12
-# updated: 2026-10-18
+# updated: 2026-10-21
 # ---
 """
 signer.py — the one place the daemon learns *how* a served garden's seals are read and made.
 
-Until 2026-10-12 the daemon reached mono's Python `tools/sign.py` directly, in five places, so no garden but the one that
-holds that file could be served honestly (spec-rt-mcp-slice §2, runtime). Two providers, one interface, chosen by the garden
-being served:
+Until 2026-10-12 the daemon reached the origin's Python `tools/sign.py` directly, in five places, so no garden but the one
+that holds that file could be served honestly. Two providers, one interface, chosen by the garden being served:
 
   PySigner    the origin's own garden: `<tree>/tools/sign.py`, exactly as before.
   CoreSigner  a pot: the core THE POT IS WIRED TO (`git config bonsai.core`), through its Node verifier
@@ -54,7 +53,7 @@ def find_sidecar(path: Path) -> tuple[Path | None, str]:
 
 
 class PySigner:
-    """The origin's signer: mono's tools/sign.py."""
+    """The origin's signer: its own tools/sign.py."""
 
     kind = "sign.py"
 
@@ -138,8 +137,8 @@ class CoreSigner:
         )
 
 
-# --- the exec gate, for a daemon that does not live beside mono's sign.py ---------------------------------------------------
-# The daemon refuses to serve when a module of its own import closure no longer matches its seal. Beside mono's tools/sign.py
+# --- the exec gate, for a daemon that does not live beside the origin's sign.py ---------------------------------------------
+# The daemon refuses to serve when a module of its own import closure no longer matches its seal. Beside the origin's sign.py
 # that is sign.py's job (server.py, unchanged). A daemon hosted by RUNTIME has no sign.py, and answers one of two ways, by what
 # it is:
 #   an INSTALLED rt (RT-MANIFEST.json at its root): every module's sha256 is the manifest's; the rt is the one the wired core's
@@ -151,8 +150,16 @@ class CoreSigner:
 #       fallback is refused on both paths. Core pins no rt by hash (2026-10-18; the gardener: "we should never refer to a specific version of runtime as a
 #       dependency me thinks"); this gate reads no rt-pin.json;
 #   a runtime CHECKOUT (the origin's own daemon): every module's seal, through core's Node verifier with the served garden's
-#       own keys (--keys garden, $BONSAI_GARDEN = the served garden).
+#       own keys (--keys garden, $BONSAI_GARDEN = the served garden), AND the checkout's sealed CODE-MANIFEST.json (below).
 # Anything that cannot be checked is a failure: a gate that fails open when its tooling is missing is no gate.
+#
+# CODE RUNS ONLY FROM A SEALED MANIFEST (F-12, from 2026-10-21; the gardener's pick of 2026-10-20, "2a"). A seal's address
+# is provenance, never a verdict (bonsai-garden-sign 1.1.0): a module passes its own seal wherever its bytes are. So a
+# module's own seal cannot tell this gate which document belongs at which position, and another sealed module put in
+# repo_routing.py's place would pass it. A map can: an installed rt's RT-MANIFEST.json (paths and bytes), and for a
+# checkout CODE-MANIFEST.json at its root, generated from the tree by core's tools/code-manifest.mjs and sealed (paths
+# and the seal ids of the documents that belong there). No manifest, or one whose seal does not hold: the gate refuses,
+# and says so. Never a fall back to a position check.
 
 SIGN_MARKER = Path("skills") / "bonsai-garden-sign" / "bin" / "sign.mjs"
 RT_MINIMUM = Path("skills") / "bonsai-garden-keys" / "rt-minimum.json"
@@ -280,6 +287,56 @@ def _installed_rt_gate(paths: list, server_root: Path, repo_root: Path, core: Pa
     return out
 
 
+CODE_MANIFEST = "CODE-MANIFEST.json"
+_ID_LINE = re.compile(r"^\s*id:\s*(\S+)", re.M)
+
+
+def seal_id(verifier_out: str) -> str | None:
+    """The id a verdict's ok lines name (`  id:          <ULID>`), from either verifier's printed verdict."""
+    m = _ID_LINE.search(verifier_out or "")
+    return m.group(1) if m else None
+
+
+def code_manifest_check(paths: list, server_root: Path, ids: dict, manifest_verdict) -> list:
+    """[(path, reason)] for every module of `paths` whose position the checkout's sealed CODE-MANIFEST.json does not vouch
+    for; one ("<verifier>", reason) when there is no such manifest, or its seal does not hold. `ids` maps each module whose
+    own seal held to the id that seal carries (a module missing from `ids` failed its own seal and is reported there).
+    `manifest_verdict(file) -> (ok, first line)` is the gate's own verifier on the manifest's seal."""
+    man = Path(server_root) / CODE_MANIFEST
+    if not man.is_file():
+        return [
+            (
+                "<verifier>",
+                f"no sealed manifest for this daemon's code: {CODE_MANIFEST} is not at {server_root}; code runs only from "
+                "a sealed manifest (write it with core's tools/code-manifest.mjs, then seal it)",
+            )
+        ]
+    ok, first = manifest_verdict(man)[:2]
+    if not ok:
+        return [("<verifier>", f"{CODE_MANIFEST}'s seal does not hold: {first}")]
+    try:
+        doc = json.loads(man.read_text("utf-8"))
+        listed = {f["path"]: f["id"] for f in doc["files"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return [("<verifier>", f"{CODE_MANIFEST} unreadable ({type(e).__name__})")]
+    out = []
+    root = Path(server_root).resolve()
+    for p in paths:
+        if p not in ids:
+            continue
+        try:
+            rel = Path(p).resolve().relative_to(root).as_posix()
+        except ValueError:
+            out.append((p, f"outside {root}: {CODE_MANIFEST} places nothing there"))
+            continue
+        want = listed.get(rel)
+        if want is None:
+            out.append((p, f"not in {CODE_MANIFEST}: no sealed manifest places code at {rel}"))
+        elif ids[p] != want:
+            out.append((p, f"{CODE_MANIFEST} places {want} at {rel}; the module there is sealed as {ids[p]}"))
+    return out
+
+
 def sibling_core(server_root: Path) -> Path | None:
     """The one core beside this runtime that carries the Node verifier, by marker; none or more than one is None (never a guess)."""
     hits = (
@@ -308,6 +365,7 @@ def core_gate(paths: list, server_root: Path, repo_root: Path, core: Path | None
     if (server_root / "RT-MANIFEST.json").is_file():
         return _installed_rt_gate(paths, server_root, repo_root, core, node)
     out = []
+    ids = {}
     env = dict(os.environ, BONSAI_GARDEN=str(repo_root))
     for p in paths:
         try:
@@ -331,4 +389,7 @@ def core_gate(paths: list, server_root: Path, repo_root: Path, core: Path | None
                     else f"cannot-verify: the verifier gave no verdict (rc={r.returncode})",
                 )
             )
-    return out
+            continue
+        ids[p] = seal_id(r.stdout)
+    # its own seal is bytes, signer and id; WHICH document belongs at this position is the checkout's sealed map (2a)
+    return out + code_manifest_check(paths, server_root, ids, lambda f: _sidecar_verdict(node, core, f, repo_root))

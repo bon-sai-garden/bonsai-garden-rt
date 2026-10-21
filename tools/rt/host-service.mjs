@@ -5,10 +5,11 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-19
-// updated: 2026-10-19
+// updated: 2026-10-20
 // ---
 //
 //   node <rt>/tools/rt/host-service.mjs install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>]
+//   node <rt>/tools/rt/host-service.mjs install     --pot <dir> --explain   (or --dry-run): every write and download, nothing done
 //   node <rt>/tools/rt/host-service.mjs probe       --pot <dir> [--kin <slug>[,<slug>...]]
 //   node <rt>/tools/rt/host-service.mjs link-skills --pot <dir>
 //   node <rt>/tools/rt/host-service.mjs uninstall   --pot <dir>
@@ -21,6 +22,15 @@
 // service folder) so no session sees two garden MCPs.
 //
 // Linux without PM2: a systemd --user unit is owed, not built; install refuses and says so. Windows: owed.
+//
+// install --explain (or --dry-run) says, before anything happens, every file install would write and where, every
+// download (uv's fetch of the MCP's pinned Python packages: how many, from which index, into which folder), what it
+// would run and register, and the one verb back; it writes, starts, registers and downloads nothing. install itself
+// says the download before it starts the service. F-24 of dry run #4 and T-11 of its walk record (2026-10-20): the gardener's
+// yes was to install his garden's host service, and his first question after was "uv? I thought we'd only install
+// the MCP." The two switches are install's alone: any other verb given either refuses it (64) before it reads or writes
+// anything. Every verb once took them and only install read them, so link-skills --dry-run linked and uninstall
+// --dry-run uninstalled (the RC round of 2026-10-20).
 //
 // install also links each kin's skill into the pot (.claude/skills/<slug> -> agents/<slug>, local only, never a copy), so
 // a new kin's /<slug> is known to Claude in a session opened in the pot; where a link cannot be made it names the step.
@@ -35,8 +45,9 @@
 // it is called with into its dump, and a shell's tokens have no business there.
 //
 // Exit: install, link-skills, uninstall: 0 done · 2 refused (nothing changed; one line: why, and what to do) · 3 halt (a
-// step failed part way; the line says what is left) · 64 usage. probe: 0 connected, every kin answered ok · 1 not
-// connected (which) · 2 answered STOP (which kin, and its line) · 64 usage.
+// step failed part way; the line says what is left) · 64 usage (--explain or --dry-run on any verb but install too).
+// probe: 0 connected, every kin answered ok · 1 not connected (which) · 2 answered STOP (which kin, and their line) · 64
+// usage.
 
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -66,7 +77,9 @@ const usage = (m) => new Exit(64, m);
 
 const USAGE = `host-service.mjs — the garden's MCP as a host service, registered once at user level
 
-  install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>]
+  install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>] [--explain]
+              --explain (or --dry-run): say every write and every download first, and do none of them;
+              install's alone: any other verb given either refuses it (64), and nothing is done
               run the garden's MCP on 127.0.0.1 under PM2 (else a LaunchAgent on macOS), register it with Claude at
               user level under the garden's own name (default <garden name>-garden), retire the pot's per-session
               .mcp.json entry, and link each kin's skill into the pot. Idempotent: a second run changes nothing.
@@ -85,6 +98,8 @@ Exit (probe): 0 connected and every kin ok · 1 not connected · 2 answered STOP
 // ── arguments ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const KNOWN = new Set(['pot', 'name', 'port', 'launcher', 'wait', 'kin']);
+const SWITCHES = new Set(['explain', 'dry-run']); // flags that take no value, and install's alone
+const VERBS = new Set(['install', 'probe', 'link-skills', 'uninstall']);
 
 function parse(argv) {
   const pos = [];
@@ -97,6 +112,10 @@ function parse(argv) {
     }
     const k = a.slice(2);
     if (k === 'help') throw new Exit(0, USAGE);
+    if (SWITCHES.has(k)) {
+      f[k] = true;
+      continue;
+    }
     if (!KNOWN.has(k)) throw usage(`unknown flag --${k}`);
     const v = argv[i + 1];
     if (v === undefined || v.startsWith('--')) throw usage(`--${k} needs a value`);
@@ -151,6 +170,10 @@ function context(argv, deps = {}) {
   const { pos, f } = parse(argv);
   const verb = pos[0];
   if (!verb) throw usage(USAGE);
+  // a verb that is not install never takes --explain or --dry-run: it refuses before it reads or writes anything, never
+  // runs for real under a switch it does not read
+  const sw = verb !== 'install' && VERBS.has(verb) ? [...SWITCHES].find((s) => f[s]) : undefined;
+  if (sw) throw usage(`${verb} takes no --${sw}, only install does; nothing was done`);
   if (!f.pot) throw usage(`${verb} needs --pot <dir>`);
   const home = deps.home || os.homedir();
   return {
@@ -348,6 +371,49 @@ function definition(ctx, facts, name, port, launcher) {
   args.push('--garden', facts.pot, '--transport', 'http', '--port', String(port));
   const def = { launcher, name, port, url: `http://127.0.0.1:${port}/`, cmd: ctx.bins.uv, args, env, cwd: facts.pot };
   return { ...def, hash: sha256(JSON.stringify(def)) };
+}
+
+/** What uv fetches when the service first starts: the MCP's lock, read here (nothing is run but `uv cache dir`). */
+function uvFetch(ctx, facts, def) {
+  const lock = path.join(path.dirname(facts.server), 'uv.lock');
+  const env = def.env.UV_PROJECT_ENVIRONMENT;
+  let text = null;
+  try {
+    text = fs.readFileSync(lock, 'utf8');
+  } catch {
+    /* said below */
+  }
+  const blocks = text ? text.split(/^\[\[package\]\]\s*$/m).slice(1) : [];
+  const fetched = blocks.map((b) => /^source = \{ registry = "([^"]+)"/m.exec(b)).filter(Boolean);
+  const cache =
+    process.env.UV_CACHE_DIR ||
+    (() => {
+      const r = run(ctx.bins.uv, ['cache', 'dir']);
+      return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+    })();
+  return {
+    lock,
+    env,
+    found: text !== null,
+    count: fetched.length,
+    indexes: [...new Set(fetched.map((x) => x[1]))],
+    requires: text ? (/^requires-python = "([^"]+)"/m.exec(text) || [])[1] || null : null,
+    cache,
+    there: fs.existsSync(path.join(env, 'pyvenv.cfg')),
+  };
+}
+
+/** One line: what uv will fetch, from where, into where, and when. */
+function fetchLine(u) {
+  if (!u.found)
+    return `no uv.lock at ${u.lock}: uv run --frozen refuses to start the server without one (this rt is incomplete)`;
+  if (u.there)
+    return `${u.env} is already there: at the service's first start uv checks it against ${u.lock} and fetches only what differs`;
+  return (
+    `at the service's first start, uv fetches up to ${u.count} Python packages pinned in ${u.lock} (those for this platform), ` +
+    `from ${u.indexes.join(', ') || 'its index'} (or uv's cache${u.cache ? `, ${u.cache}` : ''}, if they are there), into ${u.env}; ` +
+    `and a Python${u.requires ? ` ${u.requires}` : ''} only if uv finds none on this host, into uv's own python folder`
+  );
 }
 
 // ── PM2 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1050,10 +1116,13 @@ async function cmdInstall(ctx) {
     throw refuse(
       "no claude CLI on this host, so the service cannot be registered at user level; install Claude Code's CLI, or name it with BONSAI_CLAUDE",
     );
+  const explain = !!(ctx.f.explain || ctx.f['dry-run']);
   const app = pm2Name(name);
   const label = `${LABEL_PREFIX}${name}`;
+  let pm2Asleep = false; // --explain never starts PM2's daemon to ask it a question
   if (launcher === 'pm2' && !(rec?.status === 'installed' && rec.app === app)) {
-    const a = pm2App(ctx, app, { spawn: true });
+    pm2Asleep = explain && !fs.existsSync(path.join(pm2Home(ctx), 'rpc.sock'));
+    const a = pm2Asleep ? null : pm2App(ctx, app, { spawn: !explain });
     if (a?.error) throw halt(a.error);
     if (a)
       throw refuse(
@@ -1082,6 +1151,8 @@ async function cmdInstall(ctx) {
 
   // the service
   const def = { ...definition(ctx, facts, name, port, launcher), garden: facts.garden, app, label };
+  const fetch = uvFetch(ctx, facts, def);
+  if (explain) return explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep });
   const moved = rec?.status === 'installed' && rec.port !== port;
   if (moved) ctx.say(`port: ${rec.port} -> ${port}`);
   const next = {
@@ -1103,6 +1174,7 @@ async function cmdInstall(ctx) {
     installed: rec?.status === 'installed' ? rec.installed : new Date().toISOString(),
     updated: new Date().toISOString(),
   };
+  ctx.say(`download: ${fetchLine(fetch)}`); // said before the service starts, as --explain says it
   const changed = launcher === 'pm2' ? pm2Install(ctx, def, rec) : launchdInstall(ctx, def, rec);
   if (launcher === 'launchd') next['plist-sha256'] = sha256(fs.readFileSync(plistFile(ctx, label)));
   writeRecord(ctx.home, next); // the record follows the launcher at once: a later halt leaves a record that uninstall can read
@@ -1136,6 +1208,76 @@ async function cmdInstall(ctx) {
       `; then: node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} probe --pot ${facts.pot}`,
   );
   if (steps.length) ctx.say(`open: ${steps.length} step(s) above are yours (STEP)`);
+}
+
+/** install --explain: every write, run, download and registration install would make, from where to where; none made. */
+function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep }) {
+  const sd = serviceDir(ctx.home, facts.garden);
+  const row = (verb, what, why) => ctx.say(`  ${verb.padEnd(9)} ${what}${why ? `   ${why}` : ''}`);
+  ctx.say(
+    'install --explain: nothing is written, started, registered or downloaded by this run. install would, on this host:',
+  );
+  if (rec?.status === 'installed')
+    row(
+      'note',
+      `this garden's service is installed (${recordFile(ctx.home, facts.garden)})`,
+      'install changes only what differs',
+    );
+  if (def.launcher === 'launchd')
+    row(
+      'write',
+      plistFile(ctx, def.label),
+      `the LaunchAgent that keeps the garden's MCP running (launchctl bootstrap gui/${ctx.uid})`,
+    );
+  else {
+    row(
+      'write',
+      path.join(sd, 'pm2-ecosystem.json'),
+      `PM2's definition of the app ${def.app}, then pm2 start and pm2 save`,
+    );
+    row('write', path.join(pm2Home(ctx), 'dump.pm2'), "PM2's saved list, so the app comes back after a restart");
+    if (pm2Asleep) row('note', "PM2's daemon is not running here", 'pm2 starts it');
+  }
+  row('write', recordFile(ctx.home, facts.garden), "this service's record (uninstall reads it)");
+  row('write', `${path.join(sd, 'mcp.out.log')}, mcp.err.log`, "the service's logs");
+  row('run', `${def.cmd} ${def.args.join(' ')}`, `the garden's MCP on ${def.url}, in ${facts.pot}`);
+  row('download', fetchLine(fetch));
+  row('write', def.env.PYTHONPYCACHEPREFIX, "the server's bytecode, outside rt");
+  if (reg && reg.type === 'http' && reg.url === def.url)
+    row('note', `${def.name} is registered at user level already`, 'not written again');
+  else
+    row(
+      'write',
+      claudeConfigFile(ctx),
+      `through claude mcp add --scope user --transport http ${def.name} ${def.url} (the user-level registration)`,
+    );
+  const shadows = shadowEntries(ctx.pot, def.name);
+  if (shadows.length)
+    row(
+      'write',
+      path.join(ctx.pot, '.mcp.json'),
+      `retires ${shadows.join(', ')} (a server per session); its bytes kept first at ${path.join(sd, 'pot-mcp.json.before')}`,
+    );
+  const kin = kinWithBodies(ctx.pot);
+  const skills = path.join(ctx.pot, '.claude', 'skills');
+  for (const k of kin)
+    row(
+      'link',
+      `${path.join(skills, k.slug)} -> ${path.relative(skills, k.body)}`,
+      `/${k.skillName} in a session opened in the pot`,
+    );
+  if (kin.length) {
+    const ex = excludeFile(ctx);
+    const has = ex && fs.existsSync(ex) && fs.readFileSync(ex, 'utf8').split('\n').includes('/.claude/skills/');
+    if (!has)
+      row(
+        'write',
+        ex || "the pot's .git/info/exclude",
+        'the line /.claude/skills/ (local only; the sealed .gitignore is not touched)',
+      );
+  }
+  row('way back', `node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} uninstall --pot ${facts.pot}`);
+  ctx.say('then: the same line without --explain does it, and says each step as it goes');
 }
 
 async function cmdLinkSkills(ctx) {

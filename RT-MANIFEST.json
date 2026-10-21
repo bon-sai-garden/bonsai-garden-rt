@@ -1,16 +1,22 @@
 {
-  "format": "bonsai-garden-rt-manifest/1",
+  "format": "bonsai-garden-rt-manifest/2",
   "name": "bonsai-garden-rt",
-  "version": "0.8.4",
-  "upstream": {
-    "repo": "bonsai-garden-runtime",
-    "commit": "d2ea7487b38bcd9cb7b1d8da77e6dbbd8102c226"
-  },
+  "version": "0.9.1-rc",
   "files": [
+    {
+      "path": ".LICENSE-CC-BY-SA-4.0.bonsaisig",
+      "sha256": "ce8870de97b9dd033de0c7ba1e51bd1aeae93ec192c9fccad61f10e3631662fc",
+      "bytes": 532
+    },
     {
       "path": ".LICENSE.bonsaisig",
       "sha256": "121e6533b01d4e0d1cfd60e1e5acbe84e89871fe9c892fc9908537d3f64824ae",
       "bytes": 519
+    },
+    {
+      "path": ".LICENSING.md.bonsaisig",
+      "sha256": "41deea52c7a60ed7be12b378a746c10246c68c0e158ec80b703684a852762044",
+      "bytes": 520
     },
     {
       "path": "LICENSE",
@@ -18,9 +24,19 @@
       "bytes": 11360
     },
     {
+      "path": "LICENSE-CC-BY-SA-4.0",
+      "sha256": "28a9529c7d0bb4dc51f4bf5c116a3d16ef247a052f7591466768ddf563fd1cf5",
+      "bytes": 20138
+    },
+    {
+      "path": "LICENSING.md",
+      "sha256": "8b4321e0249356cd1eccc38987bfd6189ade1405568be4b5f06dff69fb20f724",
+      "bytes": 4441
+    },
+    {
       "path": "README.md",
-      "sha256": "93a80aa28d3728df1243336e8e87d3c992b4179a21119084841542e3e0ca5b18",
-      "bytes": 5168
+      "sha256": "5fbd350dd4c423d8d4e0db559ec6fdb631606b311af9cb8ae5b6a36654bff11e",
+      "bytes": 5902
     },
     {
       "path": "tools/.repo_skip_dirs.py.bonsaisig",
@@ -39,37 +55,37 @@
     },
     {
       "path": "tools/bonsai-mcp/.integrity_line.py.bonsaisig",
-      "sha256": "b793a14698dcd557c20a25b379174a84925613e20160bb5edbbb649bbdad059f",
+      "sha256": "032999a7e18dbd314ff6fafa12f657bfcca07e4280e2068e15e37e3edc1d3091",
       "bytes": 542
     },
     {
       "path": "tools/bonsai-mcp/.pyproject.toml.bonsaisig",
-      "sha256": "a037644b92d8529b32219f4056c0335ec26fa57140a87a164335be4e56ec2369",
+      "sha256": "6c97e705fbdf903e600f8ed40558c4e93f222fec24599da182b8851c228dc078",
       "bytes": 543
     },
     {
       "path": "tools/bonsai-mcp/.repo_routing.py.bonsaisig",
-      "sha256": "b1e6d82897f02966343280b7f004b8507a5e2bc270353906443faaa404930f83",
+      "sha256": "f0c2032341657f22a2389a7b04b4f078031f9c5b20ded1f89f711a262455153a",
       "bytes": 540
     },
     {
       "path": "tools/bonsai-mcp/.server.py.bonsaisig",
-      "sha256": "0608f8f1de0dd8cf983b07d9494b21493b86baefba0adc560ed64dfc3a70e968",
+      "sha256": "8ee2cbf7f805c11de20ca2e915fa6fd2517e43e26d79b666d81494c90b4f2566",
       "bytes": 534
     },
     {
       "path": "tools/bonsai-mcp/.signer.py.bonsaisig",
-      "sha256": "d900fb6acd45453096c1bfe7af49a80642e7c1f1aa8701e7395ca0bfa08e1f7d",
+      "sha256": "0263d504ec0deaeabb27424a4dd1698d931cd747fb621eaf06fd104866b6d510",
       "bytes": 534
     },
     {
       "path": "tools/bonsai-mcp/.skill_install.py.bonsaisig",
-      "sha256": "aef5c36f1b467c485c4f7706a1ef0c225a5e87651003e1037258d8a2d76279a1",
+      "sha256": "d17b82232f911550791e1125c12ec778e8bf99fb7773c64d55eb3414fc55cdd2",
       "bytes": 541
     },
     {
       "path": "tools/bonsai-mcp/.uv.lock.bonsaisig",
-      "sha256": "435ce46ad537fa374910deeb3bf5e0eb35d9b80ccc94b8464e464fd91e522c64",
+      "sha256": "69b58207aacb4d04470879b36e5c309eb25fa42348a0781a574af4716a104c91",
       "bytes": 536
     },
     {
@@ -84,38 +100,38 @@
     },
     {
       "path": "tools/bonsai-mcp/integrity_line.py",
-      "sha256": "c5be82a790279c6dafae1e0ab480f11bfe8d787de5b053b0c5df28799e34261f",
-      "bytes": 16893
+      "sha256": "e5b980b8788f1198d5aabcb02425a22f6dcd6ca251c04a04fae7595276064ba7",
+      "bytes": 17155
     },
     {
       "path": "tools/bonsai-mcp/pyproject.toml",
-      "sha256": "db83b46b9d599557508fa1c86b4eb4576b00364d50a9ac85b3d8d95c2b879930",
-      "bytes": 490
+      "sha256": "2875a9467fdf83cbbadf1343bab36ba8867281043938227275aeb2bb9f5a0fe1",
+      "bytes": 466
     },
     {
       "path": "tools/bonsai-mcp/repo_routing.py",
-      "sha256": "d93a1ccc08c14ab5242533ffda64a9f013ca9ff02f19be6217b1c2df0a16271a",
-      "bytes": 30007
+      "sha256": "daa60e41cab35da538ec99cd2d2b3fa7f3d54423ea17d294720491f57d1ae0c3",
+      "bytes": 30010
     },
     {
       "path": "tools/bonsai-mcp/server.py",
-      "sha256": "d32790319c8181690a881c2239ec274e7ba6aabe0b9e1706eaa2cec5d50d39a1",
-      "bytes": 221140
+      "sha256": "740c61195ae4b250e6e7991aff2116d4f9f71ad04aaa7bb58505229adae8438f",
+      "bytes": 223158
     },
     {
       "path": "tools/bonsai-mcp/signer.py",
-      "sha256": "c43f77022e2d744e1ecb11e28757e1f4308d01edd120e5f37e1d70ecffc12b61",
-      "bytes": 15523
+      "sha256": "dfe2c0f641c37fcd9d7da34526576e39982ae4e6ffdf0aa137cd571dd4f0c643",
+      "bytes": 18918
     },
     {
       "path": "tools/bonsai-mcp/skill_install.py",
-      "sha256": "e493993a193a2824bc7cd88992cb972afa08c3881bb201a5f008ed1a7d588562",
-      "bytes": 12319
+      "sha256": "458642cfb92b69b537dc38a09bf083fc05d7b093f77a53814e38f286f620b1ae",
+      "bytes": 12330
     },
     {
       "path": "tools/bonsai-mcp/uv.lock",
-      "sha256": "494b0f347c0f661170fff3cb689c3700548a10a32f0aae557738e01bf926b3a2",
-      "bytes": 200112
+      "sha256": "2fb93896935624e8dc83a1681cb220802b8fe966223975ef35c9148ef5fe2e6b",
+      "bytes": 203457
     },
     {
       "path": "tools/hooks/garden/.pre-commit.bonsaisig",
@@ -134,23 +150,23 @@
     },
     {
       "path": "tools/rt/.doctor.mjs.bonsaisig",
-      "sha256": "d560151126d8b1e8fc3f70b113fd718ed5f325e24d9960274fce5806796e32ec",
+      "sha256": "a1f5a78b5c2426526132156cf8f3d6644029648546cef3ed5187612dc5de81a1",
       "bytes": 527
     },
     {
       "path": "tools/rt/.host-service.mjs.bonsaisig",
-      "sha256": "95e35b5667504fd6619c90a1a9366e76ae1773a90b155cff95d333bc046b520a",
+      "sha256": "04f22c7fbb67b2091710e9d34c5e4f144f054ab8c258a20863ca50c7f7465863",
       "bytes": 533
     },
     {
       "path": "tools/rt/doctor.mjs",
-      "sha256": "caed4f23cc29ac19f6dc1e2a41abf1fbc25b1627443018a2df9d560d72bb9b2b",
-      "bytes": 13768
+      "sha256": "e16ecae2571da999b74f3c448a6c23bdbfd047959efc94430176a4586b133712",
+      "bytes": 13664
     },
     {
       "path": "tools/rt/host-service.mjs",
-      "sha256": "5d060dde362995c4b400d5cbcff8346dcc75bdcc53ca945483ae6db7d35282ee",
-      "bytes": 56457
+      "sha256": "fd45e77cb17381fc3dc614f74f0aad748bb1887f27b81967527797a2c9a43fd7",
+      "bytes": 63713
     }
   ]
 }

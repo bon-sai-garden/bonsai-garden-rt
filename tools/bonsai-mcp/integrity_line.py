@@ -139,8 +139,10 @@ def write_pin(pot: Path, slug: str, fp: str) -> Path:
 
 
 def _pin_cli(argv: list) -> int:
-    """integrity_line.py pin <pot> <slug>: the gardener types the fingerprint he holds; it is saved only if it is the one the
-    pot's registry shows for that kin, so a pin is his independent word that happens to agree, never a copy of the pot's."""
+    """integrity_line.py pin <pot> <slug>: the gardener types the fingerprint to pin; it is saved only if it is the one the
+    pot's registry shows for that kin. Confirming the value the guardian presents is fine: who looks the fingerprint up is a
+    convenience question, not a security one (the gardener, 2026-10-20, runbook 7k: "It does not matter who searches for
+    that fingerprint"). The pin guards the pot against a change after the planting, not against the hand that planted it."""
     if len(argv) != 2:
         print("usage: integrity_line.py pin <pot dir> <slug>")
         return 2
@@ -154,7 +156,7 @@ def _pin_cli(argv: list) -> int:
     shown = str(ent.get("fingerprint") or ent.get("fp") or "").lower()
     typed = (
         input(
-            f"Pin for {slug} in {pot.name}. Type the full 32-hex fingerprint you hold (your own copy, not the pot's): "
+            f"Pin for {slug} in {pot.name}. Type the full 32-hex fingerprint to pin (confirming the one the guardian presents is fine): "
         )
         .strip()
         .lower()

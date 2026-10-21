@@ -4,9 +4,9 @@
   "signer": "baisai",
   "role": "owner",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-17T11:03:12Z",
+  "timestamp": "2026-10-21T08:47:10Z",
   "algorithm": "ed25519+blake2b512",
   "target": "tools/bonsai-mcp/skill_install.py",
-  "file-hash": "f063db05fb19510e763abd441becb8d8a7a41c64ebb8940d2cd13e484b4d562c6734c9a4115e087cbac359b3eed67b58be594cc19e41a65bf3138545cbc05ba7",
-  "signature": "xUTpDxYmw3QpXzuQuD6sCRaFEb/F4HrEY9SIHNedlj/fbM0Dgwdoz70q5v+IELH7G97jF/AXFZ6r5+x5SiZxAQ=="
+  "file-hash": "971fb8218b39a30cdfc3e731d2ef39a3fe68d9f7db96ce2d7e12f9d48850af2729da8793dfe2e2efbed0ab8fa73be0d0d35c7026276ed29b8d870dd47b39c0e4",
+  "signature": "E/z+BowHaZXiX+wwnwfHum75Q3VebKJWfWTTAWSF2lr4Tl865eh/99eTbO96kNH9DEnFvHLPQtJHXZdzOq/5Aw=="
 }

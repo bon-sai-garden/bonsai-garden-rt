@@ -5,7 +5,7 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-10
-// updated: 2026-10-18
+// updated: 2026-10-21
 // ---
 //
 //   node <rt>/tools/rt/doctor.mjs --pot <dir> [--attribution <record>]
@@ -192,11 +192,7 @@ try {
 }
 if (potRecord) {
   const v = M.verifyTree(rt, potRecord);
-  if (v.ok)
-    ok(
-      'rt',
-      `${rt}: ${v.manifest.name} ${v.manifest.version}, cut from ${v.manifest.upstream.repo} ${v.manifest.upstream.commit.slice(0, 12)}; every file matches what the pot recorded`,
-    );
+  if (v.ok) ok('rt', `${rt}: ${v.manifest.name} ${v.manifest.version}; every file matches what the pot recorded`);
   else fail('rt', `${rt} is not the rt this pot recorded: ${v.problems.map((p) => `${p.kind}: ${p.what}`).join('; ')}`);
   if (potRecord['rt-commit'] && fs.existsSync(path.join(rt, '.git'))) {
     const head = run('git', ['-C', rt, 'rev-parse', 'HEAD']).out;

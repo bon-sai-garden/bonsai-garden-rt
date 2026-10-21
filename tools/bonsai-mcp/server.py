@@ -5,11 +5,11 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-13
-# updated: 2026-10-19
+# updated: 2026-10-21
 # copyright: © 2026 Bonsai Garden · bon-sai.garden
 # ---
 """
-bonsai_mcp — Gated file access MCP for the bonsai-garden repo.
+bonsai_mcp — Gated file access MCP for a Bonsai Garden.
 
 Exposes read/write/search/git/metadata tools scoped to REPO_ROOT.
 All paths are relative to $BONSAI_GARDEN; traversal outside the repo
@@ -738,8 +738,9 @@ _HTTP_PORT = int(_flag("--port") or os.environ.get("BONSAI_MCP_PORT") or "5052")
 # return 200 (SSE stream open) rather than 404. The health monitor probes 127.0.0.1:5052/
 # with http.get(); FastMCP responds 200 to the SSE GET.
 # The name this server announces (serverInfo.name). The origin keeps "bonsai-garden"; the
-# runtime's wiring sets BONSAI_MCP_NAME=bonsai-garden-runtime, so the file stays byte-identical
-# in both homes (check-copy-drift) while the two read apart in a client's connector list.
+# runtime's wiring sets BONSAI_MCP_NAME=bonsai-garden-runtime, so the two read apart in a client's
+# connector list. (This file is the one master since the 10-12 ruling; mono's copy stopped at 10-13
+# and check-copy-drift.py, retired with it at phase 5, has read red since phase A.)
 _MCP_NAME = os.environ.get("BONSAI_MCP_NAME") or "bonsai-garden"
 
 
@@ -766,6 +767,10 @@ def _garden_url() -> str | None:
         return None
 
 
+# session_idle_timeout: mcp 1.30.0 closes a stateful HTTP session after 30 idle minutes (its fix for GHSA-84m7-p3x7-pcfv,
+# sessions never reclaimed). Ours lives as long as its session token, 8 hours: still bounded, and an app that idles half
+# an hour does not see the garden MCP dropped (ruled 2026-10-20). The 4 MiB body limit and the 10 000-session cap stay
+# the SDK's. Needs mcp 1.30.0 or later (pyproject.toml); test_session_idle.py reads it back from a probe daemon.
 mcp = FastMCP(
     _MCP_NAME,
     host="127.0.0.1",
@@ -773,6 +778,7 @@ mcp = FastMCP(
     streamable_http_path="/",
     website_url=_garden_url(),
     icons=_server_icons(),
+    session_idle_timeout=_SESSION_TOKEN_TTL,
 )
 
 
@@ -825,7 +831,7 @@ if _SPLIT_REGISTRY.exists():
         # is adopted would serve stale mono copies and report success.
         _ROUTER_ERROR = f"{type(_exc).__name__}: {_exc}"
         print(
-            f"[bonsai-mcp] WARNING: repo router failed to load ({_ROUTER_ERROR}); all paths resolve to the mono repo.",
+            f"[bonsai-mcp] WARNING: repo router failed to load ({_ROUTER_ERROR}); all paths resolve to the served garden's own checkout.",
             file=sys.stderr,
         )
 else:
@@ -1957,7 +1963,7 @@ def _strip_injected_preamble(content: str) -> str:
 @mcp.tool(
     name="bonsai_read_file",
     annotations={
-        "title": "Read a file from the bonsai-garden repo",
+        "title": "Read a file from the garden",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -1985,7 +1991,7 @@ async def bonsai_read_file(
     ctx: Context | None = None,
 ) -> str:
     """
-    Read a file from the bonsai-garden repository.
+    Read a file from the garden's repository.
 
     For markdown files, prepends a JSON frontmatter summary before the raw content.
     For all other files, returns raw content only.
@@ -2116,7 +2122,7 @@ async def bonsai_recall_memory(
 @mcp.tool(
     name="bonsai_write_file",
     annotations={
-        "title": "Write a file in the bonsai-garden repo",
+        "title": "Write a file in the garden",
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -2183,7 +2189,7 @@ async def bonsai_write_file(
     ctx: Context | None = None,
 ) -> str:
     """
-    Write content to a file in the bonsai-garden repository.
+    Write content to a file in the garden's repository.
 
     Creates the file if it does not exist; overwrites if it does.
     Parent directories are created by default.
@@ -2332,7 +2338,7 @@ async def bonsai_write_file(
 @mcp.tool(
     name="bonsai_append_file",
     annotations={
-        "title": "Append to an existing file in the bonsai-garden repo",
+        "title": "Append to an existing file in the garden",
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
@@ -2395,7 +2401,7 @@ async def bonsai_append_file(
     ctx: Context | None = None,
 ) -> str:
     """
-    Append content to an existing file in the bonsai-garden repository.
+    Append content to an existing file in the garden's repository.
 
     Built for large memory files (working-state, journals, lessons) where a
     full-file rewrite via bonsai_write_file risks truncation or context-size
@@ -2492,7 +2498,7 @@ async def bonsai_append_file(
 @mcp.tool(
     name="bonsai_delete_file",
     annotations={
-        "title": "Delete or tombstone a file in the bonsai-garden repo",
+        "title": "Delete or tombstone a file in the garden",
         "readOnlyHint": False,
         "destructiveHint": True,
         "idempotentHint": False,
@@ -2548,7 +2554,7 @@ async def bonsai_delete_file(
     ctx: Context | None = None,
 ) -> str:
     """
-    Delete or tombstone a file in the bonsai-garden repository.
+    Delete or tombstone a file in the garden's repository.
 
     The workshop convention is tombstone (rename to .bak) rather than hard-delete.
     Pass tombstone=false only when the gardener has explicitly approved a hard delete.
@@ -2700,7 +2706,7 @@ def _patch_kanban_status(content: str, new_status: str) -> tuple[str, bool]:
 @mcp.tool(
     name="bonsai_move_file",
     annotations={
-        "title": "Move or rename a file within the bonsai-garden repo",
+        "title": "Move or rename a file within the garden",
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,
@@ -2751,7 +2757,7 @@ async def bonsai_move_file(
     ctx: Context | None = None,
 ) -> str:
     """
-    Move or rename a file within the bonsai-garden repository.
+    Move or rename a file within the garden's repository.
 
     Both source and destination must be within the repo root.
 
@@ -2837,7 +2843,7 @@ async def bonsai_move_file(
 @mcp.tool(
     name="bonsai_list_directory",
     annotations={
-        "title": "List a directory in the bonsai-garden repo",
+        "title": "List a directory in the garden",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -2864,7 +2870,7 @@ async def bonsai_list_directory(
     ctx: Context | None = None,
 ) -> str:
     """
-    List the contents of a directory in the bonsai-garden repository.
+    List the contents of a directory in the garden's repository.
 
     Returns:
         Formatted listing — DIR or FILE, size in bytes, repo-relative path.
@@ -2920,7 +2926,7 @@ async def bonsai_list_directory(
 @mcp.tool(
     name="bonsai_search",
     annotations={
-        "title": "Search the bonsai-garden repo",
+        "title": "Search the garden",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -2959,7 +2965,7 @@ async def bonsai_search(
     ctx: Context | None = None,
 ) -> str:
     """
-    Search for a pattern across the bonsai-garden repository.
+    Search for a pattern across the garden's repository.
 
     Uses ripgrep (rg) when available; falls back to grep.
     Returns matching lines with repo-relative file paths and line numbers.
@@ -3026,7 +3032,7 @@ async def bonsai_search(
 @mcp.tool(
     name="bonsai_git_status",
     annotations={
-        "title": "Git status of the bonsai-garden repo",
+        "title": "Git status of the garden's repository",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -3035,7 +3041,7 @@ async def bonsai_search(
 )
 async def bonsai_git_status() -> str:
     """
-    Return the current git working-tree status of the bonsai-garden repository.
+    Return the current git working-tree status of the garden's repository.
 
     Equivalent to `git status --short`. Use before writing a handover or
     committing to see what has changed.
@@ -3054,7 +3060,7 @@ async def bonsai_git_status() -> str:
 @mcp.tool(
     name="bonsai_git_log",
     annotations={
-        "title": "Git log for the bonsai-garden repo",
+        "title": "Git log for the garden's repository",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -3076,7 +3082,7 @@ async def bonsai_git_log(
     ] = "",
 ) -> str:
     """
-    Return git commit history for the bonsai-garden repository.
+    Return git commit history for the garden's repository.
 
     Returns:
         One commit per line: short hash, date, author, subject.
@@ -3112,7 +3118,7 @@ async def bonsai_git_log(
 @mcp.tool(
     name="bonsai_git_diff",
     annotations={
-        "title": "Git diff for the bonsai-garden repo",
+        "title": "Git diff for the garden's repository",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -3132,7 +3138,7 @@ async def bonsai_git_diff(
     ] = "",
 ) -> str:
     """
-    Return a git diff for the bonsai-garden repository.
+    Return a git diff for the garden's repository.
 
     Returns:
         Unified diff output, or 'No changes.' if nothing differs.
@@ -3163,7 +3169,7 @@ async def bonsai_git_diff(
 @mcp.tool(
     name="bonsai_validate_metadata",
     annotations={
-        "title": "Validate frontmatter metadata in the bonsai-garden repo",
+        "title": "Validate frontmatter metadata in the garden",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -3237,7 +3243,7 @@ async def bonsai_validate_metadata(
 @mcp.tool(
     name="bonsai_find_by_id",
     annotations={
-        "title": "Find a file by its ULID id in the bonsai-garden repo",
+        "title": "Find a file by its ULID id in the garden",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -4354,7 +4360,7 @@ def _session_start_blocking(agent_slug: str, verbose: bool, ctx: Context | None)
 @mcp.tool(
     name="bonsai_session_start",
     annotations={
-        "title": "Load startup context for a bonsai-garden session",
+        "title": "Load startup context for a garden session",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -4384,7 +4390,7 @@ async def bonsai_session_start(
     ctx: Context | None = None,
 ) -> str:
     """
-    Return the canonical session startup context for a bonsai-garden agent.
+    Return the canonical session startup context for an agent of the garden.
 
     Returns the most recent handover and the agent's working-state digest.
     CLAUDE.md is intentionally excluded — it is already in the system prompt
@@ -4823,13 +4829,16 @@ def _exec_gate_verify(paths: list) -> list:
     # Seal v2: a v1 seal reads retired-v1, which sign.seal_accepted() passes only
     # while core's seal-policy.json says "v1": "warn" — so this gate refuses v1 at the same
     # cutover as every other verifier, with no switch of its own.
+    # Code runs only from a sealed manifest (F-12, 2026-10-21; the gardener's pick "2a"): a seal's address is provenance, never
+    # a verdict, so each module's own seal says bytes, signer and id, and the tree's sealed CODE-MANIFEST.json says which
+    # document belongs at which path (signer.code_manifest_check). The manifest's own seal is verified in the same process.
     prog = (
         "import sys, json; sys.path.insert(0, sys.argv[1]); import sign\n"
         "from pathlib import Path\n"
         "rows = []\n"
         "for p in sys.argv[2:]:\n"
         "    st, meta = sign.verify_sidecar_file(Path(p))\n"
-        "    rows.append([p, st, sign.seal_accepted(st, meta)])\n"
+        "    rows.append([p, st, sign.seal_accepted(st, meta), (meta or {}).get('id')])\n"
         "print(json.dumps(rows))"
     )
     if not (
@@ -4844,7 +4853,10 @@ def _exec_gate_verify(paths: list) -> list:
             REPO_ROOT,
             _wired_core(REPO_ROOT) if _is_pot() else (_oc if (_oc / _signer_mod.SIGN_MARKER).is_file() else None),
         )
+    manifest = SERVER_ROOT / _signer_mod.CODE_MANIFEST
     argv = ["python3", "-c", prog, str(SERVER_ROOT / "tools")] + [str(p) for p in paths]
+    if manifest.is_file():
+        argv.append(str(manifest))
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=120, cwd=str(SERVER_ROOT))
         if r.returncode != 0:
@@ -4852,14 +4864,24 @@ def _exec_gate_verify(paths: list) -> list:
         rows = json.loads(r.stdout)
     except Exception as exc:
         return [("<verifier>", f"{type(exc).__name__}: {exc}")]
-    for p, status, accepted in rows:
+    man_row = rows.pop() if manifest.is_file() and rows and rows[-1][0] == str(manifest) else None
+    for p, status, accepted, _id in rows:
         if accepted and status != "ok":
             print(
                 f"[bonsai_mcp] exec-gate: WARNING {p} — {status} (a v1 seal; accepted until the "
                 f"v1 cutover, refused after it; re-seal as v2)",
                 file=sys.stderr,
             )
-    return [(p, status) for p, status, accepted in rows if not accepted]
+    failed = [(p, status) for p, status, accepted, _id in rows if not accepted]
+    ids = {p: _id for p, status, accepted, _id in rows if accepted}
+    by_str = {str(p): p for p in paths}
+    placed = _signer_mod.code_manifest_check(
+        [str(p) for p in paths],
+        SERVER_ROOT,
+        ids,
+        lambda f: (bool(man_row) and man_row[1] == "ok", f"{man_row[1] if man_row else 'no verdict'}"),
+    )
+    return failed + [(by_str.get(p, p), why) for p, why in placed]
 
 
 def _exec_gate_override(raw: str, today: str) -> tuple:
@@ -4892,8 +4914,15 @@ def _exec_gate_refusal(failures: list, total: int, today: str) -> str:
     """The refusal sentence: modules whose seal was checked and differs ("do not match their seals") and modules
     whose seal could not be checked ("cannot verify", with the reasons) are counted and worded apart."""
     cannot = [(m, r) for m, r in failures if _exec_gate_unverifiable(m, r)]
-    differ = [(m, r) for m, r in failures if not _exec_gate_unverifiable(m, r)]
+    placed = [(m, r) for m, r in failures if not _exec_gate_unverifiable(m, r) and _signer_mod.CODE_MANIFEST in str(r)]
+    differ = [(m, r) for m, r in failures if not _exec_gate_unverifiable(m, r) and (m, r) not in placed]
     parts = []
+    if placed:
+        parts.append(
+            f"{len(placed)} of {total} modules in this daemon's import closure are not where the sealed "
+            f"{_signer_mod.CODE_MANIFEST} places them: code runs only from a sealed manifest (F-12). Re-signing will not "
+            f"help; put the module the manifest names back, or write the manifest again and seal it"
+        )
     if differ:
         parts.append(
             f"{len(differ)} of {total} modules in this daemon's import closure do not match their seals. "
@@ -4947,7 +4976,7 @@ def _exec_gate() -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="bonsai_mcp — bonsai-garden gated file access MCP server")
+    parser = argparse.ArgumentParser(description="bonsai_mcp — a Bonsai Garden's gated file access MCP server")
     parser.add_argument(
         "--transport",
         choices=["stdio", "http"],

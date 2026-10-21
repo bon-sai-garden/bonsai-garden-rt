@@ -5,7 +5,7 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-23
-# updated: 2026-10-17
+# updated: 2026-10-21
 # ---
 """
 skill_install.py — is the SKILL.md a harness actually loaded the same body as the repo's?
@@ -97,7 +97,7 @@ def installed_paths(slug: str) -> list[Path]:
             / "SKILL.md"
         ),
         str(home / ".claude" / "skills" / slug / "SKILL.md"),
-        # a plugin's skills (bon-sai-team, bonsai-garden-core): the store the desktop app
+        # a plugin's skills (bon-sai-team, the bonsai-garden-core plugin): the store the desktop app
         # installs an uploaded .plugin into. Missed until 2026-10-05, when the line said
         # `current` from a stale Cowork copy while the plugin install went unread.
         str(home / ".claude" / "plugins" / "marketplaces" / "*" / "*" / "skills" / slug / "SKILL.md"),
