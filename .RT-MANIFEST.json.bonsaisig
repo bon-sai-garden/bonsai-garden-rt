@@ -4,9 +4,9 @@
   "signer": "baisai",
   "role": "owner",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-21T13:19:12Z",
+  "timestamp": "2026-10-23T05:07:27Z",
   "algorithm": "ed25519+blake2b512",
   "target": "RT-MANIFEST.json",
-  "file-hash": "80a2a30acbc2282b53c8f06fc54838f8d8ae916a2da8fb8fb8b5ec6ca9048bbc1ec40063929ddf21bce429b513a1e8e703bddea972b0fa1094b5f6eae0df2c45",
-  "signature": "u3swxwUVs79ckAXlDL3SoI8KLKZAWMhSwnzCSrBPNhKQNoip0NdtFA1Jpv6FQ8D9AYKwuSoxI5fynsVgYOFRBw=="
+  "file-hash": "6d8afb3ceea5e1fc5048bd05814d83e4c2334529f800cfaed3e23efb32dbd5b82aaea8732a69f0574e994243c721d0e18934fe758475464dc7c38d06bc5cdf5f",
+  "signature": "feNK6ahAwFc6i2LVGTExw6Bvkhs8nzti+eZ7WisXWE8hSP6cTgBiZq8agW/Bnn9s9bu3hNgI/ymdvkJBM6pVAw=="
 }

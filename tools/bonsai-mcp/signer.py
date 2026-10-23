@@ -161,6 +161,15 @@ class CoreSigner:
 # and the seal ids of the documents that belong there). No manifest, or one whose seal does not hold: the gate refuses,
 # and says so. Never a fall back to a position check.
 
+# THE MODE (ruled 2026-10-21; from rt 0.9.2, the format string unchanged): RT-MANIFEST.json's entries state the
+# mode git holds, "100644" or "100755", on every entry or on none (none: every rt before 0.9.2); some, or another value, is
+# malformed and refuses. Where it is stated, each module's owner execute bit must be what its entry says, and a miss refuses
+# that module, with the fix in plain words. LAST_RT_MODE says what the last installed-rt gate did of the modes: checked,
+# not-stated, or not-checkable (no execute bit on this platform), and never checked when it was not.
+RT_MODES = ("100644", "100755")
+EXEC_READABLE = os.name != "nt"
+LAST_RT_MODE: str | None = None
+
 SIGN_MARKER = Path("skills") / "bonsai-garden-sign" / "bin" / "sign.mjs"
 RT_MINIMUM = Path("skills") / "bonsai-garden-keys" / "rt-minimum.json"
 _VERSION = re.compile(r"^\d+\.\d+\.\d+(\.\d+)?(-[a-z0-9.-]+)?$")
@@ -200,15 +209,38 @@ def _sidecar_verdict(node: str, core: Path, file: Path, garden: Path) -> tuple[b
 
 def _installed_rt_gate(paths: list, server_root: Path, repo_root: Path, core: Path, node: str) -> list:
     """The INSTALLED rt half of core_gate (see above)."""
+    global LAST_RT_MODE
+    LAST_RT_MODE = None  # no manifest read yet: no word on modes
     manifest = server_root / "RT-MANIFEST.json"
     try:
         raw = manifest.read_bytes()
         doc = json.loads(raw)
-        listed = {f["path"]: f["sha256"] for f in doc.get("files", [])}
+        entries = doc.get("files", [])
+        listed = {f["path"]: f["sha256"] for f in entries}
         name, version = doc["name"], doc["version"]
         version_key(version)
     except (OSError, ValueError, KeyError, TypeError) as e:
         return [("<verifier>", f"rt's RT-MANIFEST.json unreadable ({type(e).__name__})")]
+    stating = [f for f in entries if "mode" in f]
+    if stating and len(stating) != len(entries):
+        return [
+            (
+                "<verifier>",
+                f"rt's RT-MANIFEST.json is malformed: mode on some entries ({len(stating)} of {len(entries)}); "
+                "a manifest states every entry's mode or none",
+            )
+        ]
+    odd = next((f for f in stating if not (isinstance(f["mode"], str) and f["mode"] in RT_MODES)), None)
+    if odd:
+        return [
+            (
+                "<verifier>",
+                f"rt's RT-MANIFEST.json is malformed: {odd['path']} has mode {json.dumps(odd['mode'])}; "
+                'a mode is "100644" or "100755"',
+            )
+        ]
+    modes = {f["path"]: f["mode"] for f in stating}
+    mode_said = "not-stated" if not modes else "checked" if EXEC_READABLE else "not-checkable"
     try:
         minimum = json.loads((core / RT_MINIMUM).read_text("utf-8"))
         min_name, min_version, signers = minimum["name"], minimum["min-version"], list(minimum["signers"])
@@ -284,6 +316,17 @@ def _installed_rt_gate(paths: list, server_root: Path, repo_root: Path, core: Pa
             out.append((p, "not listed in RT-MANIFEST.json"))
         elif hashlib.sha256(Path(p).read_bytes()).hexdigest() != want:
             out.append((p, "hash-mismatch against RT-MANIFEST.json"))
+        elif mode_said == "checked" and bool(os.stat(p).st_mode & 0o100) != (modes.get(rel) == "100755"):
+            # the owner's execute bit, and only it (a umask owns the rest); a miss refuses, never a warning
+            out.append(
+                (
+                    p,
+                    f"mode: RT-MANIFEST.json says executable (100755) and it is not; run chmod +x {rel}"
+                    if modes.get(rel) == "100755"
+                    else f"mode: RT-MANIFEST.json says not executable (100644) and it is; run chmod -x {rel}",
+                )
+            )
+    LAST_RT_MODE = mode_said
     return out
 
 

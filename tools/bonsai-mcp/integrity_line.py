@@ -46,7 +46,7 @@ from pathlib import Path
 
 import signer as _signer
 
-# (repo name, absolute path) for a repo-relative path in the mono repo's namespace
+# (repo name, absolute path) for a repo-relative path in the hub's namespace
 Resolver = Callable[[str], "tuple[str, Path]"]
 
 STOP_TAIL = "use nothing; tell the gardener"
@@ -68,6 +68,23 @@ def human_types(repo_root: Path) -> tuple:
     if not extra:
         extra = [t.strip() for t in os.environ.get("BONSAI_LEGACY_HUMAN_TYPES", "").split(",")]
     return (HUMAN_TYPE, *[t for t in (extra or []) if isinstance(t, str) and t and t != HUMAN_TYPE])
+
+
+def core_beside(garden: Path) -> Path | None:
+    """The core of a garden that is not wired to one (the origin's own): of the repos its routing table lists
+    (rituals/repo/repo-split-registry.json: the hub and `repos`), checked out beside it, the one that holds core's signer
+    (signer.SIGN_MARKER). Found by marker among the garden's own repos, never by a name: a copy of core beside it that
+    the table does not list is not its core. None, or more than one, is None: the caller says it could not check."""
+    try:
+        table = json.loads((garden / "rituals" / "repo" / "repo-split-registry.json").read_text("utf-8"))
+        slugs = [table.get("hub"), *(r.get("slug") for r in table.get("repos") or [] if isinstance(r, dict))]
+    except (OSError, ValueError, AttributeError):
+        return None
+    roots = {Path(garden).resolve()} | {
+        (Path(garden).parent / s).resolve() for s in slugs if isinstance(s, str) and s and "/" not in s
+    }
+    hits = sorted(r for r in roots if (r / _signer.SIGN_MARKER).is_file())
+    return hits[0] if len(hits) == 1 else None
 
 
 def _first(r: subprocess.CompletedProcess) -> str:
@@ -230,10 +247,14 @@ def line(
         if pot is not None and no_core:
             # the checker is the core the pot is WIRED to (git config bonsai.core); none wired is never answered by a guess
             return f"STOP — cannot check: no core wired to this pot (git config bonsai.core is unset in {pot}) — {STOP_TAIL}"
-        # The verifier is the SIGNER's (signer.py): mono's sign.py for the origin's own garden, the wired core's Node verifier
-        # for a pot. A caller that names `sign_py` (the tests, the CLI) gets the Python one, as before.
+        # The verifier is the SIGNER's (signer.py): the origin's own sign.py for its own garden, the wired core's Node
+        # verifier for a pot. A caller that names `sign_py` (the tests, the CLI) gets the Python one, as before.
         signer = signer or _signer.PySigner(sign_py or repo_root / "tools" / "sign.py")
-        conformance = conformance or repo_root.parent / "bonsai-garden-core" / "tools" / "check-shintai-conformance.py"
+        if conformance is None:
+            core = core_beside(repo_root)
+            if core is None:
+                return f"STOP — cannot check: no core beside this garden (its routing table lists none holding core's signer) — {STOP_TAIL}"
+            conformance = core / "tools" / "check-shintai-conformance.py"
         gone = signer.missing()
         if gone:
             return f"STOP — cannot check: {gone} — {STOP_TAIL}"

@@ -116,12 +116,12 @@ REPO_ROOT: Path = Path(_env_root).resolve()
 # and the modules the exec gate checks, belong to the tree this file sits in. A new garden's pot has no tools/, so
 # a gate or a write that reached sign.py through the served root could never serve it. Found by marker, never by
 # counting directory levels, and never from $BONSAI_GARDEN: this is not a fallback for the served garden (there is
-# none), it is where the daemon's own code lives. Today it is the mono checkout; when the runtime serves, the runtime.
+# none), it is where the daemon's own code lives: the origin's own tree, a runtime checkout, or an installed rt.
 # A runtime checkout is known by the commit hook every garden repo runs from it (tools/hooks/git/pre-commit: edited in
-# place, never moved), not by rt's slice: the slice is release machinery and leaves for the pot's build-process/ (the
-# strip, 2026-10-18), and a daemon run from runtime must not stop starting the day it does.
+# place, never moved), not by the files a release is made with: those may leave it (2026-10-18), and a daemon run from
+# a runtime checkout must not stop starting the day they do.
 SERVER_ROOT_MARKERS = (
-    ("mono", "tools/sign.py"),
+    ("the origin's own tree", "tools/sign.py"),
     ("a runtime checkout", "tools/hooks/git/pre-commit"),
     ("an installed rt", "RT-MANIFEST.json"),
 )
@@ -150,8 +150,8 @@ SERVER_ROOT: Path = _find_server_root()
 
 
 def _origin_sign_py() -> Path | None:
-    """mono's tools/sign.py: in the daemon's own tree when it runs from mono, else in the served garden (the origin's own, when the
-    daemon is hosted by runtime). None for a pot, which has neither."""
+    """The origin's tools/sign.py: in the daemon's own tree when it runs from the origin's tree, else in the served garden
+    (the origin's own, when the daemon is hosted by a runtime). None for a pot, which has neither."""
     for r in (SERVER_ROOT, REPO_ROOT):
         if (r / "tools" / "sign.py").is_file():
             return r / "tools" / "sign.py"
@@ -639,17 +639,10 @@ def _env_block(slug: str, ctx: Context | None) -> str:
     # The verifier and the conformance checker are the DAEMON's tools (its own tree), never the served garden's:
     # a new garden's pot has no tools/ (Bonsai's rehearsal, gap 59, 2026-10-11).
     # A served pot's checker is the core THE POT IS WIRED TO (git config bonsai.core, set by install-runtime), never a sibling of
-    # the daemon's tree by name: a stranger's garden has no such sibling. Our own garden keeps its sibling core. (Bonsai, 2026-10-11)
+    # the daemon's tree by name: a stranger's garden has no such sibling. Our own garden keeps its core beside it: the one
+    # repo its routing table lists that holds core's signer, found by marker, never by name (2026-10-11, 2026-10-21).
     _pot = REPO_ROOT if _is_pot() else None
-    _core = (
-        _wired_core(_pot)
-        if _pot is not None
-        else (
-            SERVER_ROOT.parent / "bonsai-garden-core"
-            if _origin_sign_py() == SERVER_ROOT / "tools" / "sign.py"
-            else REPO_ROOT.parent / "bonsai-garden-core"
-        )
-    )
+    _core = _wired_core(_pot) if _pot is not None else _integrity_line.core_beside(REPO_ROOT)
     integrity = safe(
         lambda: _integrity_line.line(
             REPO_ROOT,
@@ -737,10 +730,9 @@ _HTTP_PORT = int(_flag("--port") or os.environ.get("BONSAI_MCP_PORT") or "5052")
 # streamable_http_path="/" moves the MCP endpoint to root so health probes at GET /
 # return 200 (SSE stream open) rather than 404. The health monitor probes 127.0.0.1:5052/
 # with http.get(); FastMCP responds 200 to the SSE GET.
-# The name this server announces (serverInfo.name). The origin keeps "bonsai-garden"; the
-# runtime's wiring sets BONSAI_MCP_NAME=bonsai-garden-runtime, so the two read apart in a client's
-# connector list. (This file is the one master since the 10-12 ruling; mono's copy stopped at 10-13
-# and check-copy-drift.py, retired with it at phase 5, has read red since phase A.)
+# The name this server announces (serverInfo.name): BONSAI_MCP_NAME, which a garden's wiring sets so two servers read
+# apart in a client's connector list (the host service names each `<garden name>-garden`), else the product's own name,
+# the one every kin's tools carry (mcp__bonsai-garden__*).
 _MCP_NAME = os.environ.get("BONSAI_MCP_NAME") or "bonsai-garden"
 
 
@@ -783,11 +775,11 @@ mcp = FastMCP(
 
 
 # ---------------------------------------------------------------------------
-# Multi-repo routing
+# Routing across a garden's repositories
 # ---------------------------------------------------------------------------
 # The split registry says where each path will eventually live AND whether it
 # has moved yet. The router keys on `status`, so while every entry is `pending`
-# this resolves exactly as it did before — mono holds everything. Paths start
+# this resolves exactly as it did before — the hub holds everything. Paths start
 # routing elsewhere one `adopted` entry at a time. See repo_routing.py.
 try:
     from repo_routing import (
@@ -828,7 +820,7 @@ if _SPLIT_REGISTRY.exists():
         # Do not take the server down: today every entry is `pending`, so no
         # routing decision is lost. But say so on stderr and keep the reason
         # reachable — a router that quietly stops routing after the first repo
-        # is adopted would serve stale mono copies and report success.
+        # is adopted would serve the hub's stale copies and report success.
         _ROUTER_ERROR = f"{type(_exc).__name__}: {_exc}"
         print(
             f"[bonsai-mcp] WARNING: repo router failed to load ({_ROUTER_ERROR}); all paths resolve to the served garden's own checkout.",
@@ -905,7 +897,7 @@ def _resolve(path: str) -> Path:
     if ".." in Path(path).parts:
         raise ValueError(f"Path '{path}' contains parent traversal ('..'), which is not allowed.")
 
-    # Has this path left the mono repo? While every registry entry is `pending`
+    # Has this path left the hub? While every registry entry is `pending`
     # the answer is always no and this falls straight through.
     if _ROUTER is not None:
         try:
@@ -973,8 +965,8 @@ def _resolve_write(path: str) -> Path:
 def _garden_roots() -> list:
     """[(repo_slug, root)]: the SERVED garden first, under the name its routing table gives it (the hub's, or a listed
     repo's whose sibling checkout is this one; else its folder's name), then the hub and every listed repo checked out
-    beside it. Read fresh: the registry changes on disk. Served from mono, this is mono first as it always was; served from
-    the origin's pot (the 0.8.2 acceptance run), the pot is first and mono is a sibling like any other."""
+    beside it. Read fresh: the registry changes on disk. Served from the hub, the hub is first as it always was; served
+    from a pot that names another hub (2026-10-17), the pot is first and the hub is a sibling like any other."""
     served, others = REPO_ROOT.name, []
     with contextlib.suppress(
         OSError, ValueError, AttributeError
@@ -1114,7 +1106,8 @@ def _find_by_id_path(id_value: str, root: Path | None = None) -> Path | None:
     """The live file carrying `id: <id_value>`. With `root`, the first match under that tree, as before. Without, every
     repo of the garden is searched (served first, then the hub and the listed siblings), and a match counts only where a
     read of its address would reach that very file: a stale copy or a tombstone that kept the id is not the document (the
-    0.8.2 acceptance run: served from the pot, mono's ids were "not found"; served from mono, core's and the pot's were).
+    acceptance run of 2026-10-17: served from the pot, the hub's ids were "not found"; served from the hub, core's and the
+    pot's were).
     When no match is the routed one, the served garden's first match is returned, as it was."""
     if root is not None:
         hits = [h for h in _id_hits(id_value, root) if _carries_id(h, id_value)]
@@ -1598,7 +1591,7 @@ def _self_memory_guard(path: str, caller: str, allow_bootstrap: bool = True):
 
 
 # ── home/ layer access control (2026-09-22) ──
-# Spec: bonsai-garden-core/rituals/specs/spec-canonical-shintai-structure.md
+# Spec: core's rituals/specs/spec-canonical-shintai-structure.md
 # §"The home/ layer — substructure, access model, and an honest limit" (v3.0.0).
 # That section names the gap in code: "_owner_roots() ... builds ownership only
 # from registry paths starting agents/; home/ appears nowhere in server.py."
@@ -1821,10 +1814,10 @@ def _seal_cmd(slug: str, path: str, file: Path | None = None) -> str:
     """The command that seals `path` as `slug`, for the garden being SERVED — resolved, never assumed.
     A pot with bonsai.core wired: core's keys.mjs seal-staged, by that absolute core path. Any other garden: the
     runtime's seal-staged.py, by the first path that exists (this daemon's own tree, the wired bonsai.rt, the
-    sibling runtime checkout). When none exists it says so rather than print a path that is not there.
+    runtime checkout among the garden's listed repos). When none exists it says so rather than print a path that is not there.
     `file`: where the write landed. Routed into another repo of the garden (the hub, when the origin is served from
     its pot), the command is that repo's, at its own path there: the served pot's seal-staged cannot see the file
-    (the 0.8.2 acceptance run, 2026-10-17: the hint named the pot for a file written into mono)."""
+    (the acceptance run of 2026-10-17: the hint named the pot for a file written into the hub)."""
     if file is not None:
         _slug, root, rel = _locate(Path(file))
         if root is not None and Path(root).resolve() != Path(REPO_ROOT).resolve():
@@ -1844,7 +1837,7 @@ def _seal_cmd(slug: str, path: str, file: Path | None = None) -> str:
     rt = _wired_rt(REPO_ROOT)
     if rt is not None:
         cands.append(rt / _SEAL_STAGED_REL)
-    cands.append(REPO_ROOT.parent / "bonsai-garden-runtime" / _SEAL_STAGED_REL)
+    cands += [r / _SEAL_STAGED_REL for _s, r in _garden_roots()[1:]]  # a runtime checkout the garden's table lists
     for c in cands:
         if c.is_file():
             return f"python3 {c} --as {slug} --file {path}"
@@ -1861,7 +1854,9 @@ def _writer_role(file_path: Path, writer: str, created: bool = False) -> tuple[s
     without seal_role (an older or seed core), an unreadable file — it is (None, why): no role is invented, and the
     caller says so. The attribute is checked here, at the point of use."""
     global _CREDIT_MOD
-    core = (_wired_core(REPO_ROOT) if _is_pot() else None) or REPO_ROOT.parent / "bonsai-garden-core"
+    core = _wired_core(REPO_ROOT) if _is_pot() else _integrity_line.core_beside(REPO_ROOT)
+    if core is None:
+        return None, "no core: none wired to this pot, or none beside this garden that its routing table lists"
     cp = core / "tools" / "credit.py"
     try:
         if _CREDIT_MOD is None:
@@ -3731,7 +3726,7 @@ def _slug_from_buzz_pubkey(pubkey: str) -> str:
 
 def _agent_root_quiet(slug: str) -> Path | None:
     """_agent_root for diagnostics (the stale-boot banner): None when the slug is unknown
-    OR its root cannot be routed. A diagnostic skips; it never falls back to mono's copy."""
+    OR its root cannot be routed. A diagnostic skips; it never falls back to the hub's copy."""
     try:
         return _agent_root(slug)
     except ValueError:
@@ -3761,7 +3756,7 @@ def _agent_root(slug: str) -> Path | None:
     p = (entry.get("path") or f"agents/{slug}").strip().strip("/")
     # Routed like any read (write routing, 2026-09-23): once a body is adopted into
     # pot, its root IS the pot copy. _resolve raises (loud, repo named) rather than
-    # falling back to mono's stale copy or tombstone.
+    # falling back to the hub's stale copy or tombstone.
     return _resolve(p)
 
 
@@ -4563,7 +4558,7 @@ async def bonsai_get_shared_context(
     for rel_path, label in files:
         # Route. This joined REPO_ROOT directly until 2026-09-17, which meant
         # that once the shared layer moved to the pot in Wave 1 (2026-09-14)
-        # every digest=False call read the TOMBSTONE left at the mono address
+        # every digest=False call read the TOMBSTONE left at the hub's address
         # and returned it as the codex. It did not fail: p.exists() is true for
         # a tombstone, so the "not found" branch never fired and no agent was
         # told its law was missing. AGENTS.md -> "Fail, don't fall back".
@@ -4610,7 +4605,7 @@ async def bonsai_get_shared_context(
 
 # W's audit of the third dry run (F-11, 2026-10-18): a planted pot's layer (its codex and covenant, core's routines)
 # came back as ~63k characters in one answer, over the harness's tool-output limit, so the kin had to page a file for
-# its own start context. Above the budget the layer comes back in parts: consecutive slices of the one text, cut at a
+# its own start context. Above the budget the layer comes back in parts: consecutive pieces of the one text, cut at a
 # section boundary where one falls in the second half of the window, else at a line end; nothing summarised, nothing
 # dropped, and the parts concatenated are the layer byte for byte.
 _SHARED_PART_BUDGET = int(os.environ.get("BONSAI_SHARED_CONTEXT_PART_BUDGET") or 30000)
@@ -4637,8 +4632,8 @@ def _shared_context_part(text: str, part: int, include_cosmology: bool, digest: 
     budget = max(2000, _SHARED_PART_BUDGET)
     if part == 0 and len(text) <= budget:
         return text
-    slices = _shared_context_slices(text, budget - _SHARED_PART_FRAME)
-    n = len(slices)
+    parts = _shared_context_slices(text, budget - _SHARED_PART_FRAME)
+    n = len(parts)
     k = 1 if part == 0 else part
     if not 1 <= k <= n:
         return f"part {part}: this shared context has {n} part(s), 1 to {n}"
@@ -4649,7 +4644,7 @@ def _shared_context_part(text: str, part: int, include_cosmology: bool, digest: 
         if k < n
         else f"\n\n=== end of part {k} of {n}: the last part ==="
     )
-    return head + slices[k - 1] + foot
+    return head + parts[k - 1] + foot
 
 
 # ---------------------------------------------------------------------------
@@ -4773,7 +4768,7 @@ async def bonsai_presence(
 # committed twice in the week of 2026-09-22 with a stale .bonsaisig, and nothing
 # noticed. Nothing could: no spawn path of this daemon (launchd, PM2, `uv run`)
 # passes through the Bash pre-exec hook, so the daemon has to check itself.
-# Spec: bonsai-garden-runtime/rituals/specs/spec-execute-gate-signed-artefacts.md.
+# Spec: spec-execute-gate-signed-artefacts.md.
 #
 # WHY THE CLOSURE AND NOT THE FILE: a verifier's finding, 2026-09-22 — a self-check that
 # reads only server.py.bonsaisig passes with a tampered repo_routing.py sitting
@@ -4844,14 +4839,11 @@ def _exec_gate_verify(paths: list) -> list:
     if not (
         SERVER_ROOT / "tools" / "sign.py"
     ).is_file():  # hosted by runtime or an installed rt: no sign.py (signer.py)
-        _oc = (
-            REPO_ROOT.parent / "bonsai-garden-core"
-        )  # the origin's own core, as its integrity line has always named it
         return _signer_mod.core_gate(
             paths,
             SERVER_ROOT,
             REPO_ROOT,
-            _wired_core(REPO_ROOT) if _is_pot() else (_oc if (_oc / _signer_mod.SIGN_MARKER).is_file() else None),
+            _wired_core(REPO_ROOT) if _is_pot() else _integrity_line.core_beside(REPO_ROOT),  # the origin's own core
         )
     manifest = SERVER_ROOT / _signer_mod.CODE_MANIFEST
     argv = ["python3", "-c", prog, str(SERVER_ROOT / "tools")] + [str(p) for p in paths]

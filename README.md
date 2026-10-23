@@ -1,18 +1,9 @@
----
-id: 01M4KSMR3WVR8VAMTCCKZJZGZZ
-title: "rt — the runtime a new garden's pot installs"
-type: readme
-tended-by: baisai
-created: 2026-10-10
-updated: 2026-10-21
----
-
 # rt — the runtime a new garden's pot installs
 
-rt is the runtime of a Bonsai Garden. It holds the gate every commit in a garden's pot passes, a doctor that says whether a host and a pot are ready, and the garden's MCP: the server a garden's sessions read and write the garden through. It is not installed by hand: the garden's core (the seed, `bonsai-garden-seed`) installs it, and only when every byte checks out.
+rt is the runtime of a Bonsai Garden. It holds the gate every commit in a garden's pot passes, a doctor that says whether a host and a pot are ready, and the garden's MCP: the server a garden's sessions read and write the garden through. It is not installed by hand: the garden's seed (`bonsai-garden-seed`) installs it, and only when every byte checks out.
 
-> [!note] Release candidate, 0.9.1-rc
-> The seed and rt are released together under one version, and this is it: 0.9.1-rc. A label never orders a version: to every check, 0.9.1-rc is 0.9.1. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
+> [!note] Release candidate, 0.9.2-rc
+> The seed and rt are released together under one version, and this is it: 0.9.2-rc. A label never orders a version: to every check, 0.9.2-rc is 0.9.2. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
 
 ## What is in it
 
@@ -57,7 +48,7 @@ In the commands, `<seed>` is your copy of the seed, and `<rt>` is the rt the see
 
 `install --explain` (or `--dry-run`) changes nothing on the host. It names every file `install` would write, and where: the LaunchAgent, or PM2's definition and saved list; the service's record and logs; the user-level registration in Claude's configuration; the pot's `.mcp.json`, when it retires an entry there; each skill link; the pot's `.git/info/exclude`. It says what it would run, and what `uv` downloads when the service first starts: the Python packages pinned in the MCP's `uv.lock`, from its index (or uv's cache), into `~/.bonsai-garden/rt-env/<rt>`, and a Python only if uv finds none on the host. It ends with the way back, `uninstall`. `install` says the same download line before it starts the service.
 
-`install` runs the server on `127.0.0.1`, one port and one name per garden (`<garden name>-garden`), so two gardens can share a host. PM2 runs it where PM2 is present, else a LaunchAgent on macOS; on Linux without PM2 it refuses and says the launcher is still owed. `uv` runs the server from the installed rt with `--garden <your pot>`, its Python environment and bytecode kept outside rt, so rt stays exactly what its manifest says. The service is registered once, with `claude mcp add --scope user --transport http`. A per-session garden entry in the pot's `.mcp.json` is retired (the desktop app drops such a server after one turn), and each kin's skill is linked into the pot (`.claude/skills/<slug>`, local only). A second run changes nothing.
+`install` runs the server on `127.0.0.1`, one port and one name per garden (`<garden name>-garden`), so two gardens can share a host. PM2 runs it where PM2 is present, else a LaunchAgent on macOS; on Linux without PM2 it refuses, and says that launcher is not written yet. `uv` runs the server from the installed rt with `--garden <your pot>`, its Python environment and bytecode kept outside rt, so rt stays exactly what its manifest says. The service is registered once, with `claude mcp add --scope user --transport http`. A per-session garden entry in the pot's `.mcp.json` is retired (the desktop app drops such a server after one turn), and each kin's skill is linked into the pot (`.claude/skills/<slug>`, local only). A second run changes nothing.
 
 `probe` says *connected* or *not connected*, and which: not installed, not running, not registered, turned off for this pot, or shadowed. Then it asks each kin's integrity line through the service and shows the answer: `ok`, or a STOP.
 
@@ -71,7 +62,7 @@ It captures no transcripts and holds no key. The server answers only on `127.0.0
 
 ## How it is tested
 
-rt ships without its tests. Every script in it is tested before a release is made, and a release is refused when its text names a garden or carries a ticket id, or when a version its lock pins has a published advisory.
+rt ships without its tests. Every script in it is tested before a release is made, and a release is refused when a version its lock pins has a published advisory.
 
 ## License
 

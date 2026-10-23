@@ -79,14 +79,19 @@ def _default_repos_root() -> Path:
 
 _DEFAULT_SIBLING_ROOT = _default_repos_root()
 
-MONO_SLUG = "bonsai-garden"
+
+def _home_of(registry_path: Path) -> Path:
+    """The checkout a table sits in, found by its marker (the nearest directory above it that holds .git), never by a
+    name: the hub of a table that names none. A table in no checkout (a test's fixture) belongs to its own folder."""
+    here = Path(registry_path).resolve().parent
+    return next((d for d in (here, *here.parents) if (d / ".git").exists()), here)
 
 
 @dataclass(frozen=True)
 class Resolution:
     """Where a path lives, and why the router thinks so."""
 
-    repo: str  # repo slug, e.g. "bonsai-garden-core"
+    repo: str  # repo slug, the name of its checkout
     root: Path  # that repo's checkout on this host
     path: Path  # the absolute resolved path
     rule: str | None  # the registry entry that matched, if any
@@ -158,15 +163,16 @@ class RoutingLoop(Exception):
 
 class Router:
     """Routes on a split registry. The table's `hub` (its 0.5.0) names the repo that holds every path with no `adopted`
-    entry. Without one, the old reading holds: mono is the hub, or `served_root`, when the caller names the garden it
-    serves (a garden served from itself is its own hub, as it always was). The origin served from its pot names mono as
-    its hub, and a path that has not moved resolves there, in a sibling checkout (the 0.8.2 acceptance run, 2026-10-17)."""
+    entry. Without one, the hub is `served_root`, when the caller names the garden it serves (a garden served from
+    itself is its own hub), else the checkout the table sits in, found by its marker. A garden served from its pot may
+    name another checkout as its hub, and a path that has not moved resolves there, in a sibling checkout (2026-10-17)."""
 
     def __init__(self, registry_path: Path, repos_root: Path = _DEFAULT_SIBLING_ROOT, served_root: Path | None = None):
         self.repos_root = Path(repos_root)
         self.served_root = Path(served_root).resolve() if served_root else None
         self.hub: str | None = None
         self.registry_path = Path(registry_path)
+        self.home_root = _home_of(self.registry_path)
         self._rules: list[tuple[str, str, str, str]] = []  # (path, repo, target_path, status)
         self._foreign: dict[str, list[tuple[str, str, str, str]]] = {}  # source-repo -> its rules (0.6.0)
         self._stamp: tuple[int, int] | None = None  # (mtime_ns, size)
@@ -174,10 +180,15 @@ class Router:
 
     @property
     def mono_root(self) -> Path:
-        """Where a path that has not moved lives: the hub's checkout (the name is from when mono was the only hub)."""
+        """Where a path that has not moved lives: the hub's checkout (the name is older than the hub; kept for callers)."""
         if self.hub:
             return self.repos_root / self.hub
-        return self.served_root or self.repos_root / MONO_SLUG
+        return self.served_root or self.home_root
+
+    @property
+    def hub_slug(self) -> str:
+        """The hub's repo slug: the table's `hub`, else the name of the checkout that stands in for it."""
+        return self.hub or self.mono_root.name
 
     def hub_is_served(self) -> bool:
         """Is the hub the garden being served? Then a path that has not moved is that garden's own, as before."""
@@ -224,7 +235,7 @@ class Router:
         hub = data.get("hub")
         if hub is not None and not _is_slug(hub):
             raise json.JSONDecodeError(f"`hub` must be one repo slug, not {hub!r}", "", 0)
-        hub_slug = hub or MONO_SLUG
+        hub_slug = hub or (self.served_root or self.home_root).name
         rules: list[tuple[str, str, str, str]] = []
         foreign: dict[str, list[tuple[str, str, str, str]]] = {}
         for e in data.get("entries", []):
@@ -263,17 +274,16 @@ class Router:
             #   adopted     -> the target repo holds it now; route there
             #   archived    -> retired to the archive repo; refuse, and say where
             #   dropped     -> deliberately deleted, archived nowhere; refuse
-            #   distributed -> a derived copy exists downstream, mono is still
-            #                  authoritative; resolve to mono. This one matters:
-            #                  core/site hold ADAPTED copies, not the originals
-            #                  (core's README differs from mono's by 394 lines),
+            #   distributed -> a derived copy exists elsewhere, the hub is still
+            #                  authoritative; resolve to the hub. This one matters:
+            #                  a derived copy may be ADAPTED, not the original,
             #                  so routing there would serve different content
             #                  while reporting success.
-            #   pending / skipped / anything else -> mono
+            #   pending / skipped / anything else -> the hub
             rules.append(
                 (
                     src.rstrip("/"),
-                    e.get("target-repo") or MONO_SLUG,
+                    e.get("target-repo") or hub_slug,
                     (e.get("target-path") or src).rstrip("/"),
                     (e.get("status") or "pending"),
                 )
@@ -328,7 +338,7 @@ class Router:
             bound = _bound(rule, path) if status == "pending" else None
             if self.hub_is_served():
                 return Resolution(
-                    self.hub or MONO_SLUG,
+                    self.hub_slug,
                     hub_root,
                     (hub_root / path).resolve(),
                     rule[0] if rule else None,
@@ -362,7 +372,7 @@ class Router:
         if ".." in Path(path).parts:
             raise ValueError(f"Path '{path}' contains parent traversal, which is not allowed.")
         self._maybe_reload()
-        if repo == (self.hub or MONO_SLUG):
+        if repo == (self.hub_slug):
             return self.resolve(path)
         if not _is_slug(repo):
             raise ValueError(f"'{repo}' is not a repo slug")
@@ -391,7 +401,7 @@ class Router:
         tpath = f"{target}/{suffix}" if suffix else target
         if hops >= 8:
             raise RoutingLoop(f"'{repo}:{p}' is still being routed after 8 hops: the adopted entries form a loop")
-        if trepo == (self.hub or MONO_SLUG):
+        if trepo == (self.hub_slug):
             res = self.resolve(tpath)
         elif trepo in self._foreign:
             res = self._resolve_foreign(trepo, tpath, hops + 1)
@@ -416,12 +426,10 @@ def _bound(rule: tuple[str, str, str, str] | None, path: str) -> str | None:
 
 
 def _self_test() -> int:
-    """Run against the real registry. Exits non-zero on any failure."""
+    """The router's logic against throwaway tables and repos; and, when $BONSAI_GARDEN names a garden, that garden's own
+    table, read and routed. Exits non-zero on any failure."""
     import tempfile
 
-    garden = Path(os.environ.get("BONSAI_GARDEN", Path.home() / "dev/agentic/bonsai-garden"))
-    reg = garden / "rituals/repo/repo-split-registry.json"
-    r = Router(reg)
     fails = []
 
     def check(label, cond):
@@ -429,18 +437,32 @@ def _self_test() -> int:
         if not cond:
             fails.append(label)
 
-    res = r.resolve("agents/kin-a/about-me.md")
-    check("pending entry still resolves to mono", res.repo == MONO_SLUG and not res.moved)
-    check("mono path is under the mono root", str(res.path).startswith(str(r.mono_root)))
+    def table(path: Path, entries: list, **extra) -> Path:
+        path.write_text(json.dumps({**extra, "entries": entries}))
+        return path
 
-    res2 = r.resolve("some/path/nobody/registered.md")
-    check("unregistered path falls back to mono", res2.repo == MONO_SLUG and res2.rule is None)
+    def entry(path, repo, status, target=None):
+        return {"current-path": path, "target-repo": repo, "target-path": target or path, "status": status}
 
-    try:
-        r.resolve("../etc/passwd")
-        check("traversal rejected", False)
-    except ValueError:
-        check("traversal rejected", True)
+    garden = os.environ.get("BONSAI_GARDEN", "").strip()
+    reg = Path(garden) / "rituals/repo/repo-split-registry.json" if garden else None
+    if reg and reg.is_file():
+        r = Router(reg)
+        res = r.resolve("agents/kin-a/about-me.md")
+        check("the garden's own table: a pending path resolves to the hub", res.repo == r.hub_slug and not res.moved)
+        check("… under the hub's checkout", str(res.path).startswith(str(r.mono_root)))
+        res2 = r.resolve("some/path/nobody/registered.md")
+        check("… and an unregistered path falls back to the hub", res2.repo == r.hub_slug and res2.rule is None)
+    else:
+        print("  skip  the garden's own table: $BONSAI_GARDEN names no garden with one")
+
+    with tempfile.TemporaryDirectory() as td0:
+        rt = Router(table(Path(td0) / "t.json", []), repos_root=Path(td0))
+        try:
+            rt.resolve("../etc/passwd")
+            check("traversal rejected", False)
+        except ValueError:
+            check("traversal rejected", True)
 
     # Longest-prefix, tested against a FIXTURE rather than the live registry.
     # The earlier version asserted that "agents/shared/codex-workshop.md" matched
@@ -449,17 +471,13 @@ def _self_test() -> int:
     # perfectly. A self-test that breaks when the DATA changes, rather than when
     # the LOGIC breaks, teaches people to ignore it.
     with tempfile.TemporaryDirectory() as td2:
-        fx = Path(td2) / "fixture.json"
-        fx.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {"current-path": "agents", "target-repo": "p", "status": "pending"},
-                        {"current-path": "agents/shared", "target-repo": "c", "status": "pending"},
-                        {"current-path": "agents/shared/codex.md", "target-repo": "c", "status": "pending"},
-                    ]
-                }
-            )
+        fx = table(
+            Path(td2) / "fixture.json",
+            [
+                entry("agents", "p", "pending"),
+                entry("agents/shared", "c", "pending"),
+                entry("agents/shared/codex.md", "c", "pending"),
+            ],
         )
         rf = Router(fx, repos_root=Path(td2))
         check(
@@ -471,71 +489,39 @@ def _self_test() -> int:
         )
         check("shortest applicable prefix still matches", rf._match("agents/kin-a/about-me.md")[0] == "agents")
 
-    # simulate an adopted entry without touching the real registry
+    # an adopted entry, and archived / dropped / distributed, against throwaway repos (cx holds what moved, ax the archive)
     with tempfile.TemporaryDirectory() as td:
-        fake = Path(td) / "reg.json"
-        fake.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "lore",
-                            "target-repo": "bonsai-garden-core",
-                            "target-path": "lore",
-                            "status": "adopted",
-                        }
-                    ]
-                }
-            )
-        )
-        r2 = Router(fake, repos_root=garden.parent)
+        for repo in ("cx", "ax"):
+            (Path(td) / repo).mkdir()
+        fake = table(Path(td) / "reg.json", [entry("lore", "cx", "adopted")])
+        r2 = Router(fake, repos_root=Path(td))
         moved = r2.resolve("lore/cosmology.md")
         check(
             "adopted entry routes to the other repo",
-            moved.repo == "bonsai-garden-core" and moved.moved and moved.path.name == "cosmology.md",
+            moved.repo == "cx" and moved.moved and moved.path.name == "cosmology.md",
         )
 
-        # archived / dropped / distributed
-        fake2 = Path(td) / "reg2.json"
-        fake2.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "tools/old.sh",
-                            "target-repo": "bonsai-garden-archive",
-                            "target-path": "tools/old.sh",
-                            "status": "archived",
-                        },
-                        {
-                            "current-path": "tools/gone.bak",
-                            "target-repo": "bonsai-garden-archive",
-                            "target-path": "tools/gone.bak",
-                            "status": "dropped",
-                        },
-                        {
-                            "current-path": "lore",
-                            "target-repo": "bonsai-garden-core",
-                            "target-path": "lore",
-                            "status": "distributed",
-                        },
-                    ]
-                }
-            )
+        fake2 = table(
+            Path(td) / "reg2.json",
+            [
+                entry("tools/old.sh", "ax", "archived"),
+                entry("tools/gone.bak", "ax", "dropped"),
+                entry("lore", "cx", "distributed"),
+            ],
         )
-        r4 = Router(fake2, repos_root=garden.parent)
+        r4 = Router(fake2, repos_root=Path(td))
         try:
             r4.resolve("tools/old.sh")
             check("archived refuses", False)
         except PathArchived as exc:
-            check("archived refuses and names the archive repo", "bonsai-garden-archive" in str(exc))
+            check("archived refuses and names the archive repo", "ax" in str(exc))
         try:
             r4.resolve("tools/gone.bak")
             check("dropped refuses", False)
         except PathDropped as exc:
             check("dropped refuses and points at git history", "git log" in str(exc))
         dist = r4.resolve("lore/cosmology.md")
-        check("distributed still resolves to mono (mono is authoritative)", dist.repo == MONO_SLUG and not dist.moved)
+        check("distributed still resolves to the hub (the hub is authoritative)", dist.repo == r4.hub_slug and not dist.moved)
 
         r3 = Router(fake, repos_root=Path(td) / "nowhere")
         try:
@@ -546,57 +532,15 @@ def _self_test() -> int:
 
     # --- a registry edit must take effect without a restart ----------------
     with tempfile.TemporaryDirectory() as td3:
-        reg3 = Path(td3) / "live.json"
-        reg3.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "lore",
-                            "target-repo": "bonsai-garden-core",
-                            "target-path": "lore",
-                            "status": "pending",
-                        }
-                    ]
-                }
-            )
-        )
-        rl = Router(reg3, repos_root=garden.parent)
-        check("before the edit, pending resolves to mono", rl.resolve("lore/cosmology.md").repo == MONO_SLUG)
+        (Path(td3) / "cx").mkdir()
+        reg3 = table(Path(td3) / "live.json", [entry("lore", "cx", "pending")])
+        rl = Router(reg3, repos_root=Path(td3))
+        check("before the edit, pending resolves to the hub", rl.resolve("lore/cosmology.md").repo == rl.hub_slug)
 
-        reg3.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "lore",
-                            "target-repo": "bonsai-garden-core",
-                            "target-path": "lore",
-                            "status": "adopted",
-                        }
-                    ]
-                }
-            )
-        )
-        check(
-            "after the edit, the SAME router picks it up (no restart)",
-            rl.resolve("lore/cosmology.md").repo == "bonsai-garden-core",
-        )
+        table(reg3, [entry("lore", "cx", "adopted")])
+        check("after the edit, the SAME router picks it up (no restart)", rl.resolve("lore/cosmology.md").repo == "cx")
 
-        reg3.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "tools/x.sh",
-                            "target-repo": "bonsai-garden-archive",
-                            "target-path": "tools/x.sh",
-                            "status": "archived",
-                        }
-                    ]
-                }
-            )
-        )
+        table(reg3, [entry("tools/x.sh", "ax", "archived")])
         try:
             rl.resolve("tools/x.sh")
             check("a later edit is picked up too", False)
@@ -612,20 +556,7 @@ def _self_test() -> int:
             check("unparseable registry refuses rather than routing on stale rules", True)
 
         # and an UNCHANGED registry must not be re-read on every call
-        reg3.write_text(
-            json.dumps(
-                {
-                    "entries": [
-                        {
-                            "current-path": "lore",
-                            "target-repo": "bonsai-garden-core",
-                            "target-path": "lore",
-                            "status": "pending",
-                        }
-                    ]
-                }
-            )
-        )
+        table(reg3, [entry("lore", "cx", "pending")])
         rl.resolve("lore/a.md")
         loads = []
         _orig = rl._load
@@ -638,25 +569,21 @@ def _self_test() -> int:
     # --- 0.6.0: an entry from another repo routes that repo's path, never the hub's (test_source_repo_routing.py
     # holds the rest) --------------------------------------------------------------------------------------------
     with tempfile.TemporaryDirectory() as td4:
-        for repo in (MONO_SLUG, "rx", "px"):
+        for repo in ("hx", "rx", "px"):
             (Path(td4) / repo).mkdir()
-        reg4 = Path(td4) / "src.json"
-        reg4.write_text(
-            json.dumps(
+        reg4 = table(
+            Path(td4) / "src.json",
+            [
                 {
-                    "hub": MONO_SLUG,
-                    "entries": [
-                        {
-                            "source-repo": "rx",
-                            "source-path": "tools/finder",
-                            "type": "dir",
-                            "target-repo": "px",
-                            "target-path": "tools/finder",
-                            "status": "pending",
-                        },
-                    ],
-                }
-            )
+                    "source-repo": "rx",
+                    "source-path": "tools/finder",
+                    "type": "dir",
+                    "target-repo": "px",
+                    "target-path": "tools/finder",
+                    "status": "pending",
+                },
+            ],
+            hub="hx",
         )
         rs = Router(reg4, repos_root=Path(td4))
         own = rs.resolve_in("rx", "tools/finder/app.swift")
@@ -665,7 +592,7 @@ def _self_test() -> int:
             own.repo == "rx" and not own.moved and own.bound_for == "px:tools/finder/app.swift",
         )
         hub = rs.resolve("tools/finder/app.swift")
-        check("… and never routes the hub's path of the same name", hub.repo == MONO_SLUG and hub.rule is None)
+        check("… and never routes the hub's path of the same name", hub.repo == "hx" and hub.rule is None)
 
     print(f"\n  {len(fails)} failure(s)")
     return 1 if fails else 0
