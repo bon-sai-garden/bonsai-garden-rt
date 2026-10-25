@@ -4,9 +4,9 @@
   "signer": "baisai",
   "role": "custodian",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-20T22:05:26Z",
+  "timestamp": "2026-10-24T21:39:44Z",
   "algorithm": "ed25519+blake2b512",
   "target": "tools/bonsai-mcp/uv.lock",
-  "file-hash": "fea04eb50c3ca37b432927d1d951e9423f3607e1aaeea82944dd7cc4344c53a2e292c2879dfab96e9700ec8d47b60d9bd50075d69096eb77f38872733c504af8",
-  "signature": "WWhfb2fKH6opPpbgnW37iG0XOvB710PdhtouhmVxI3c6DHNNvLu34/n7il8UfElN6NfXWZsY9ucWQb+LCnEDDQ=="
+  "file-hash": "0d809772f620ad37f79e652707b5b6f2e389dddd7e5d31763203594a80847d90dd88ff9b88bcf0417bb273b798b413fc7b805c7f393277eed1601e17a2ee21c9",
+  "signature": "9vxclHeKchHGiKUii8Jjo72cVTws61soknPw6Umv7F4dnHPKm+EKX7XwvE776nrzaB4IK6uovmstTP5f7qx8Cg=="
 }

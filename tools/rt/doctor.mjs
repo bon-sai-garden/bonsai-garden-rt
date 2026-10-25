@@ -5,7 +5,7 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-10
-// updated: 2026-10-21
+// updated: 2026-10-24
 // ---
 //
 //   node <rt>/tools/rt/doctor.mjs --pot <dir> [--attribution <record>]
@@ -307,6 +307,12 @@ if (HS) {
     note('mcp service', `not checked: ${e.message}`);
   }
   if (facts) {
+    // can this host install the MCP's pins from wheels alone? Asked of uv (a dry run: no download, no build, no write,
+    // no Python fetched); before the service is installed too, because install refuses on it
+    const wh = HS.wheelCheck(hctx, facts, { downloads: false });
+    if (wh.ok === true) ok('mcp wheels', wh.line);
+    else if (wh.ok === false) fail('mcp wheels', wh.line);
+    else note('mcp wheels', wh.line);
     const { rows } = await HS.connectionRows(hctx, facts);
     for (const [s, w, d, kind] of rows) {
       if (s === 'FAIL' && kind === 'not installed') note(w, `${d} (planting §8, after the keys and the pins)`);

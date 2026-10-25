@@ -2,8 +2,16 @@
 
 rt is the runtime of a Bonsai Garden. It holds the gate every commit in a garden's pot passes, a doctor that says whether a host and a pot are ready, and the garden's MCP: the server a garden's sessions read and write the garden through. It is not installed by hand: the garden's seed (`bonsai-garden-seed`) installs it, and only when every byte checks out.
 
-> [!note] Release candidate, 0.9.2-rc
-> The seed and rt are released together under one version, and this is it: 0.9.2-rc. A label never orders a version: to every check, 0.9.2-rc is 0.9.2. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
+> [!note] Release candidate, 0.9.3-rc
+> The seed and rt are released together under one version, and this is it: 0.9.3-rc. A label never orders a version: to every check, 0.9.3-rc is 0.9.3. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
+
+## Where it runs
+
+- **macOS on Apple silicon and on Intel.** The MCP's lock is held to a wheel for every package on both: uv refuses to lock without one, so no package is ever built from source on a Mac. On an Intel Mac the MCP runs without `cryptography`, which no fixed release publishes for it and the server does not use. So an Intel Mac serves only a planted garden, a pot that seals and verifies with the seed: a garden that seals with its own `tools/sign.py` needs `cryptography`, and cannot seal or verify through rt's Python there.
+- **Linux on x86_64 or arm64, with PM2.** The lock holds wheels for both; no lock gate proves it. Without PM2, install refuses: a systemd user unit is not written yet.
+- **Windows:** not yet. install refuses.
+
+Before it writes anything, `install` (and `install --explain`, and the doctor) asks uv whether this host can install the MCP's pinned packages from wheels alone, and refuses when it cannot. A service that `install` started and that does not answer is taken down again, so nothing restarts a server that cannot start.
 
 ## What is in it
 

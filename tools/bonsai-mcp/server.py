@@ -5,7 +5,7 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-13
-# updated: 2026-10-21
+# updated: 2026-10-25
 # copyright: © 2026 Bonsai Garden · bon-sai.garden
 # ---
 """
@@ -70,6 +70,7 @@ import subprocess
 import sys
 import tempfile as _tempfile
 import time as _time_module
+import unicodedata
 import uuid
 import weakref
 from pathlib import Path, PurePosixPath
@@ -511,8 +512,9 @@ def _audit(
 
 
 def _is_journal_path(path: str) -> bool:
-    """True for agent journal files: .../memory/journal/*.md"""
-    norm = "/" + path.replace("\\", "/").lstrip("/")
+    """True for agent journal files: .../memory/journal/*.md, in any letter case (a case-insensitive disk opens the
+    same file either way, so append-only holds either way)."""
+    norm = "/" + path.replace("\\", "/").lstrip("/").casefold()
     return "/memory/journal/" in norm and norm.endswith(".md")
 
 
@@ -957,9 +959,55 @@ def _resolve_write(path: str) -> Path:
     fingerprint checked) — it attests the signer, not the checkout.
 
     Guards run on the caller's LOGICAL path before this is called, so who may write
-    what is unchanged by routing.
+    what is unchanged by routing; since 2026-10-24 they also judge where it resolves (_judge).
     """
     return _resolve(path)
+
+
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _canonical_write_path(path) -> tuple[str, str | None]:
+    """(path, refusal) for a MUTATING tool: the one form its guards and _resolve_write both receive (the memory-guard
+    rulings of 2026-10-24, R2). A guard that reads the path one way while the write resolves it another is open: an
+    absolute path, an empty segment (`//`) or a `.` segment once passed the owner lock and landed on the record it
+    protects. So a path is judged in exactly the form it is written: repo-relative, forward slashes, no empty, `.`
+    or `..` segment. Anything else is refused, never rewritten, and the refusal gives the repo-relative form where
+    there is one. Letter case is not a form this refuses: the guards compare without regard to it (_guard_key)."""
+    p = (path if isinstance(path, str) else "").strip()
+
+    def refuse(why: str, rel: str | None = None) -> tuple[str, str]:
+        hint = f" Write it as '{rel}'." if rel else ""
+        return p, f"[write refused — '{p}' is not a repo-relative path: {why}. This was NOT performed.{hint}]"
+
+    if not p:
+        return p, "[write refused — no path was given. This was NOT performed.]"
+    if "\x00" in p:
+        return refuse("it holds a NUL byte")
+    if "\\" in p:
+        return refuse("it holds a backslash; a garden path uses forward slashes")
+    if p.startswith(("/", "~")) or _WINDOWS_DRIVE.match(p):
+        rel = None
+        with contextlib.suppress(OSError, ValueError, RuntimeError):  # no repo-relative form to offer
+            _slug, _root, r = _locate(Path(os.path.expanduser(p)).resolve())
+            rel = r if _slug else None
+        return refuse("it starts at a home folder ('~')" if p.startswith("~") else "it is absolute", rel)
+    segs = p.split("/")
+    if ".." in segs:
+        return refuse("it climbs out with '..'")
+    if "" in segs or "." in segs:
+        return refuse("it has an empty or '.' segment", "/".join(s for s in segs if s not in ("", ".")) or None)
+    return p, None
+
+
+def _exists_where_written(logical: str) -> bool:
+    """Does `logical` exist where a write to it lands (R3)? Asked through _resolve_write, so a record the routing
+    table sends to another repo is looked for in that repo, never in the served garden. A path that cannot be
+    resolved, or whose existence cannot be read, counts as existing: no bootstrap is granted on it (fails closed)."""
+    try:
+        return _resolve_write(logical).exists()
+    except Exception:
+        return True
 
 
 def _garden_roots() -> list:
@@ -1010,6 +1058,21 @@ def _where(path: Path) -> str:
     roots = _garden_roots()
     slug, _root, _ = _locate(path, roots)
     return f" → {slug}" if slug and slug != roots[0][0] else ""
+
+
+def _logical_forms(resolved: Path) -> list:
+    """The garden addresses a RESOLVED path answers to, for the guards to judge it again where it lands (R2: one
+    path). Inside the served garden, its repo-relative form; in another garden repo, the addresses the routing table
+    maps onto it (else its form in that repo); outside every garden repo, none (an approved external root, reached
+    through an in-repo symlink, is the vault guard's to judge). A symlink inside the garden that points at a guarded
+    record is judged as that record."""
+    roots = _garden_roots()
+    slug, _root, rel = _locate(resolved, roots)
+    if slug is None:
+        return []
+    if slug == roots[0][0] or _ROUTER is None:
+        return [rel]
+    return list(_ROUTER.logical_paths(slug, rel)) or [rel]
 
 
 # ---------------------------------------------------------------------------
@@ -1314,31 +1377,57 @@ _VAULT_ROOTS = [
 ]
 
 
-def _vault_guard(path: str):
+def _vault_guard(path: str, action: str = "write", end: str | None = None):
     """Return a refusal string if `path` writes into a vault-backed tree this backend cannot seal; None to proceed.
-    Fail-safe toward refusing a vault write, never raises."""
+    Fails closed (R1, 2026-10-24): an error while deciding refuses, and the refusal names it. The path is judged as
+    written, the canonical form (_canonical_write_path): it once dropped a leading '.' (`lstrip("./")`), so a link
+    named `.vault/` was looked for as `vault/`. Every component is checked, the file itself included: a file that is
+    itself a link out of the garden is a write through a link.
+
+    The refusal is true in every word (the security re-read of rt 0.9.3-rc, 2026-10-25): a write is deferred until the
+    vault is wired; a delete or a move (`action`, and for a move the `end` that is in the vault) is refused, and says
+    which, where and why, and that nothing was deleted or moved. Every form keeps "NOT performed"."""
     if not _VAULT_GUARD:
         return None
-    refusal = (
-        "[memory write deferred — this path lies in an encrypted vault that is not wired on this backend. The "
-        "write was NOT performed, to avoid storing plaintext. Conversation continues normally; memory persistence "
-        "resumes once the vault is wired to this write path.]"
-    )
+
+    def refusal(reason: str) -> str:
+        if action in ("delete", "move"):
+            where = f"its {end}, '{path}'," if action == "move" else f"'{path}'"
+            done = "moved" if action == "move" else "deleted"
+            return (
+                f"[{action} refused — {where} {reason}, and this backend does not operate there. "
+                f"Nothing was {done}. This was NOT performed.]"
+            )
+        return (
+            "[memory write deferred — this path lies in an encrypted vault that is not wired on this backend. The "
+            "write was NOT performed, to avoid storing plaintext. Conversation continues normally; memory persistence "
+            "resumes once the vault is wired to this write path.]"
+        )
+
     try:
-        norm = str(path).replace("\\", "/").lstrip("./")
-        if any(norm == r or norm.startswith(r + "/") for r in _VAULT_ROOTS):
-            return refusal
+        norm = str(path).replace("\\", "/")
+        key = _guard_key(norm)
+        if any(key == r.casefold() or key.startswith(r.casefold() + "/") for r in _VAULT_ROOTS):
+            return refusal("lies in an encrypted vault")
         root = REPO_ROOT.resolve()
         cur = REPO_ROOT
-        for part in [x for x in norm.split("/") if x][:-1]:  # every directory on the way, not the file itself
+        for part in [x for x in norm.split("/") if x]:  # every component on the way, the file itself included
             cur = cur / part
             if cur.is_symlink():
                 target = cur.resolve()
                 if target != root and root not in target.parents:
-                    return refusal
-    except Exception:
-        return None
+                    return refusal("goes through a link out of the garden")
+    except Exception as exc:
+        return _guard_fault("vault guard", path, exc, action if action in ("delete", "move") else "write")
     return None
+
+
+def _guard_fault(guard: str, path, exc: Exception, action: str = "write") -> str:
+    """The refusal of a guard that could not decide (R1): it names the guard and the error's type, never allows."""
+    return (
+        f"[{action} refused — the {guard} could not decide on '{path}' ({type(exc).__name__}); it refuses rather than "
+        f"allow. This was NOT performed.]"
+    )
 
 
 # ── Working-state / journal self-write guard (2026-07-17) ──────────
@@ -1392,6 +1481,14 @@ _PROTECTED_TAIL = re.compile(r"^memory/(?:working-state\.md|journal/[^/]+\.md)$"
 _NO_KEY_SLUGS = ("shared",)
 
 
+def _guard_key(path) -> str:
+    """The form the owner locks compare (R2, 2026-10-24): forward slashes, compatibility-normalised (NFKC) and
+    case-folded. A case-insensitive disk opens agents/<slug>/Memory/working-state.md as the record itself, so a
+    guard that compared case-sensitively let that write through. Only the comparison folds: the write goes to the
+    path as given. Folding more than the disk does refuses more, never less."""
+    return unicodedata.normalize("NFKC", str(path).replace("\\", "/")).casefold()
+
+
 # A garden's human is not a kin: no owner root, no kin key, not a known kin slug. Named by the registry's `type`, never by a
 # slug: "gardener", plus whatever legacy name the served garden declares in its own garden.json (integrity_line.human_types).
 def _human_types() -> tuple:
@@ -1399,6 +1496,7 @@ def _human_types() -> tuple:
 
 
 _OWNER_ROOTS_CACHE = None  # ([(path, slug)] longest-first, {slug})
+_SHARED_SHINTAI_CACHE = None  # {shared kin: target}, read in _owner_roots()'s one pass
 
 
 def _owner_roots():
@@ -1407,11 +1505,17 @@ def _owner_roots():
     Only `path` values under agents/ become roots — a service kin's path is
     tools/<slug>-serve.py and must never claim a tree. Cached per process.
     Fail-safe: never raises; an unreadable registry yields ([], set()) and the
-    static floor in _protected_owner takes over."""
-    global _OWNER_ROOTS_CACHE
+    static floor in _protected_owner takes over.
+
+    The same pass reads the shared-shintai exception (R5, 2026-10-24) into
+    _SHARED_SHINTAI_CACHE: `shintai: shared:<target>` names the one body a bunshin
+    shares. A target that is missing, a person, the kin themself, the slug `shared`,
+    or shared in turn grants nothing. Read once, with the roots: a registry rewritten
+    while the process runs widens nothing."""
+    global _OWNER_ROOTS_CACHE, _SHARED_SHINTAI_CACHE
     if _OWNER_ROOTS_CACHE is not None:
         return _OWNER_ROOTS_CACHE
-    roots, slugs = [], set()
+    roots, slugs, shared_raw = [], set(), {}
     try:
         import json as _json
 
@@ -1428,16 +1532,43 @@ def _owner_roots():
             if entry.get("type") in _human_types():
                 continue  # a person: no owner root, and not a kin slug any guard below recognizes
             slugs.add(slug)
+            sh = entry.get("shintai")
+            if isinstance(sh, str) and sh.strip().lower().startswith("shared:"):
+                shared_raw[slug] = sh.split(":", 1)[1].strip().lower()
             if slug in _NO_KEY_SLUGS:
                 continue
             p = (entry.get("path") or "").strip().strip("/")
             if p.startswith("agents/") and p != "agents/shared":
                 roots.append((p, slug))
         roots.sort(key=lambda t: -len(t[0]))
+        shared = {
+            k: t
+            for k, t in shared_raw.items()
+            if k not in _NO_KEY_SLUGS and t and t != k and t in slugs and t not in _NO_KEY_SLUGS and t not in shared_raw
+        }
     except Exception:
-        roots, slugs = [], set()
+        roots, slugs, shared = [], set(), {}
+    _SHARED_SHINTAI_CACHE = shared
     _OWNER_ROOTS_CACHE = (roots, slugs)
     return _OWNER_ROOTS_CACHE
+
+
+def _shared_shintai_of(caller) -> str | None:
+    """The target whose body `caller` shares (`shintai: shared:<target>`), else None. Grants nothing on any error."""
+    try:
+        _owner_roots()
+        return (_SHARED_SHINTAI_CACHE or {}).get(str(caller or "").strip().lower())
+    except Exception:
+        return None
+
+
+def _owner_root_path(slug: str) -> str | None:
+    """The registry's agents/ path for `slug` (its owner root), else None. Never raises."""
+    with contextlib.suppress(Exception):  # no root by the registry
+        for rpath, s in _owner_roots()[0]:
+            if s == slug:
+                return rpath
+    return None
 
 
 def _owner_of(path) -> tuple:
@@ -1489,19 +1620,24 @@ def _owner_of(path) -> tuple:
     with contextlib.suppress(
         AttributeError, TypeError, ValueError
     ):  # no owner by the registry; _protected_owner's static floor still holds
-        norm = str(path).replace("\\", "/").lstrip("./")
+        # compared in the guard's key (R2): a case-insensitive disk opens every letter case as the same record. The
+        # tail comes back in the key's form; only _PROTECTED_TAIL reads it.
+        norm = _guard_key(path)
+        while norm.startswith("./"):
+            norm = norm[2:]
         parts = norm.split("/")
         if len(parts) >= 4 and parts[0] == "agents" and parts[2] == "sub-agents":
-            nested_slug = parts[3].lower()
+            nested_slug = parts[3]
             _, slugs = _owner_roots()
             if nested_slug in slugs and nested_slug not in _NO_KEY_SLUGS:
                 return nested_slug, "/".join(parts[4:])
         roots, slugs = _owner_roots()
         for rpath, slug in roots:
-            if norm == rpath or norm.startswith(rpath + "/"):
-                return slug, norm[len(rpath) :].lstrip("/")
-        if len(parts) >= 2 and parts[0] == "agents" and parts[1] not in _NO_KEY_SLUGS and parts[1].lower() in slugs:
-            return parts[1].lower(), "/".join(parts[2:])
+            rkey = _guard_key(rpath)
+            if norm == rkey or norm.startswith(rkey + "/"):
+                return slug, norm[len(rkey) :].lstrip("/")
+        if len(parts) >= 2 and parts[0] == "agents" and parts[1] not in _NO_KEY_SLUGS and parts[1] in slugs:
+            return parts[1], "/".join(parts[2:])
     return None, ""
 
 
@@ -1516,10 +1652,9 @@ def _is_retired_legacy_path(path) -> bool:
     proved is its own impersonation route in the sibling resolver.
     Never raises."""
     with contextlib.suppress(AttributeError, TypeError, ValueError):  # not the retired legacy shape
-        norm = str(path).replace("\\", "/").lstrip("./")
-        parts = norm.split("/")
+        parts = _guard_key(path).split("/")
         if len(parts) >= 4 and parts[0] == "agents" and parts[2] == "sub-agents":
-            nested_slug = parts[3].lower()
+            nested_slug = parts[3]
             _, slugs = _owner_roots()
             return nested_slug in slugs and nested_slug not in _NO_KEY_SLUGS
     return False
@@ -1528,18 +1663,64 @@ def _is_retired_legacy_path(path) -> bool:
 def _protected_owner(path):
     """Owner slug if `path` is an owner-locked record (working-state.md or a
     journal entry), else None. Registry-derived UNION the static floor.
-    Never raises."""
+
+    R1 (2026-10-24): when the registry's answer fails, the static floor still
+    decides; it no longer returns None before trying it. The floor itself raises
+    only on a path it cannot read at all, and the guard refuses then."""
     try:
         owner, tail = _owner_of(path)
         if owner and _PROTECTED_TAIL.match(tail):
             return owner
-        m = _SELF_MEMORY_PATTERN.match(str(path).replace("\\", "/").lstrip("./"))
-        return m.group("slug") if m else None
-    except Exception:
+    except Exception:  # noqa: S110  the registry's answer failed; the floor below still decides
+        pass
+    m = _SELF_MEMORY_PATTERN.match(_guard_key(path))
+    return m.group("slug").lower() if m else None
+
+
+def _shared_record_bases(target: str) -> list:
+    """The two memory/ folders the shared-shintai exception reaches for `target`, exactly as they are written: the
+    registry root's memory/ and home/<target>/memory/."""
+    root = _owner_root_path(target)
+    return ([f"{root}/memory"] if root else []) + [f"home/{target}/memory"]
+
+
+def _shared_record_owner(path, caller) -> str | None:
+    """The target, when `path` is one of the two records of the kin whose body `caller` shares (R5, 2026-10-24),
+    else None. The two records only: working-state.md and journal/*.md, under the target's agents/ memory/ or under
+    home/<target>/memory/. Patterns, identity, about-me, strategic context and every other file are outside it, and
+    so is a delete or a move: those stay the owner's. Grants nothing on any error.
+
+    Exactly as written (the security read of rt 0.9.3-rc, 2026-10-25: "folding is for refusing; an allowance matches
+    exactly"). The locks fold the path (_guard_key) so they refuse every form a disk might open as a record; an
+    allowance that folded granted on forms that are not the record: a fullwidth letter or extension the disk keeps
+    as a separate file (agents/ｋin-a/..., journal/<day>.ｍｄ), and the retired agents/<parent>/sub-agents/<target>/
+    shape. So the path must be byte-equal to <base>/working-state.md or to <base>/journal/<name>.md, <name> one
+    segment and the extension a lowercase .md, for a base of _shared_record_bases(target); the retired shape never
+    grants; and the locks' own reading must agree that it is the target's record. A cased form this disk opens as
+    the record (MEMORY/, .MD) is then refused for the shared kin: they write the canonical form."""
+    try:
+        target = _shared_shintai_of(caller)
+        if not target or not isinstance(path, str) or _is_retired_legacy_path(path):
+            return None
+        exact = False
+        for base in _shared_record_bases(target):
+            name = path[len(base) + len("/journal/") :] if path.startswith(f"{base}/journal/") else ""
+            if path == f"{base}/working-state.md" or (len(name) > len(".md") and "/" not in name and name.endswith(".md")):
+                exact = True
+                break
+        if not exact:
+            return None
+        if _protected_owner(path) == target:
+            return target
+        h_owner, subdir, tail = _home_owner_of(path)
+        if h_owner == target and subdir == "memory" and _PROTECTED_TAIL.match(f"memory/{tail}"):
+            return target
+    except Exception:  # grants nothing
         return None
+    return None
 
 
-def _self_memory_guard(path: str, caller: str, allow_bootstrap: bool = True):
+def _self_memory_guard(path: str, caller: str, allow_bootstrap: bool = True, allow_shared: bool = False):
     """Return a refusal string if `path` is another agent's own working-state.md
     or journal entry and `caller` is neither its owner nor the gardener; None to
     proceed. Fail-safe — never raises.
@@ -1567,18 +1748,37 @@ def _self_memory_guard(path: str, caller: str, allow_bootstrap: bool = True):
     a grave. Nothing in current scaffolding ever creates a NEW agent at this
     shape (retired it), so a legacy address needs no bootstrap
     exemption to protect — there is no legitimate first-write case at that
-    shape left to protect."""
+    shape left to protect.
+
+    The rulings of 2026-10-24 (R1 to R3, R5):
+    - It fails closed: an error while deciding refuses, and the refusal names the
+      error's type. It used to return None, and a foreign write then landed.
+    - It judges the canonical path (_canonical_write_path) and refuses any other
+      form; owner and record are compared in _guard_key's folded case.
+    - The bootstrap is per TREE and asked where the write lands: once the owner's
+      memory/ tree exists where the path resolves (routing included), or where the
+      registry's root for the owner resolves, a foreign create is refused like a
+      foreign overwrite. A new journal day was the per-file hole; a record routed
+      to another repo never "existed" in the served garden. A kin whose memory/
+      tree does not exist yet can still be scaffolded by another hand.
+    - allow_shared=True (write and append only) lets the kin whose body the owner
+      shares (`shintai: shared:<owner>`) write, append and create the owner's two
+      records. A delete or a move never passes it: those stay the owner's."""
     if not _SELF_MEMORY_GUARD:
         return None
     try:
-        norm = str(path).replace("\\", "/").lstrip("./")
+        norm, bad = _canonical_write_path(path)
+        if bad is not None:
+            return bad
         owner = _protected_owner(norm)
         if not owner:
             return None
         if caller == owner or _is_garden_owner(caller):
             return None
-        if allow_bootstrap and not _is_retired_legacy_path(norm) and not (REPO_ROOT / norm).exists():
-            return None  # bootstrap: scaffolding a new/not-yet-invoked agent
+        if allow_shared and _shared_record_owner(norm, caller) == owner:
+            return None  # the shared-shintai exception: the owner's two records, nothing else
+        if allow_bootstrap and not _is_retired_legacy_path(norm) and not _memory_tree_exists(norm, owner):
+            return None  # bootstrap: scaffolding a new/not-yet-invoked agent, whose memory/ tree is not there yet
         return (
             f"[write refused — '{path}' is {owner}'s own working-state/journal record; "
             f"only {owner}'s own invocation (or {_garden_owner() or 'the gardener'}) may write into it directly. "
@@ -1586,8 +1786,26 @@ def _self_memory_guard(path: str, caller: str, allow_bootstrap: bool = True):
             f"or a handover instead — see rituals/tasks/lessons.md, "
             f"'writes only by the owning agent's own invocation' (2026-07-15).]"
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return _guard_fault("owner lock", path, exc)
+
+
+def _memory_tree_exists(path: str, owner: str) -> bool:
+    """Is the owner's memory/ tree there, where `path` resolves or where the registry's root for `owner` resolves
+    (R3)? `path` is one of the owner's records (memory/working-state.md or memory/journal/<day>.md). True on any doubt:
+    a path whose folded form has another shape than the path itself, or one that cannot be resolved, gets no
+    bootstrap."""
+    segs, key = path.split("/"), _guard_key(path).split("/")
+    if len(segs) != len(key):
+        return True
+    drop = 1 if key[-1] == "working-state.md" else 2  # memory/working-state.md · memory/journal/<day>.md
+    if key[-1 - drop] != "memory":
+        return True
+    places = ["/".join(segs[:-drop])]
+    root = _owner_root_path(owner)
+    if root:
+        places.append(f"{root}/memory")
+    return any(_exists_where_written(p) for p in places)
 
 
 # ── home/ layer access control (2026-09-22) ──
@@ -1620,7 +1838,14 @@ _HOME_SUBDIR_POLICY = {
     "working": "owner",  # the agent's own drafts/projects
     "misc": "owner",  # the honest pile — the kin sort their own, on their own schedule
     "temp": "owner",  # cleansed regularly — see note below; owner writes here, no one else
+    # the kin's lived memory, the whole subtree (R4, 2026-10-24): a planted garden keeps working-state, journal and
+    # patterns here and session start reads it first, so it is the record, not a skeleton. It was under neither lock.
+    # The shared-shintai exception reaches its two records exactly as in agents/ (_shared_record_owner).
+    "memory": "owner",
 }
+# A name this table does not hold is the owner's (the read of rt 0.9.3-rc, 2026-10-25): sessions/, gestures/,
+# past-walks/, a file in the home's root, a folder a planted garden keeps its lived memory in. An open folder is
+# listed here as "open", by name; nothing is open by being left out.
 # "temp/ cleansed regularly" — decided here, not left implicit: write is
 # OWNER-only (same as working/misc), not open. Nothing in the spec suggests
 # temp/ is shared scratch; it reads as the owner's own ephemeral drafts that
@@ -1652,22 +1877,22 @@ def _home_owner_of(path) -> tuple:
     agents/ guard already has (_SELF_MEMORY_PATTERN): the directory's own name is
     its owner, a well-formed slug, so the lock fails closed."""
     with contextlib.suppress(AttributeError, TypeError, ValueError):  # not a home path
-        norm = str(path).replace("\\", "/").lstrip("./")
-        parts = norm.split("/")
+        parts = _guard_key(path).split("/")  # folded case, as the agents/ lock compares (R2)
         if len(parts) >= 3 and parts[0] == "home":
-            slug = parts[1].lower()
+            slug = parts[1]
             _, slugs = _owner_roots()
             known = slug in slugs if slugs else bool(_HOME_SLUG_FLOOR.fullmatch(slug))
             if known and slug not in _NO_KEY_SLUGS_HOME:
-                return slug, parts[2].lower(), "/".join(parts[3:])
+                return slug, parts[2], "/".join(parts[3:])
     return None, None, ""
 
 
-def _home_access_guard(path: str, caller: str, allow_bootstrap: bool = True):
+def _home_access_guard(path: str, caller: str, allow_bootstrap: bool = True, allow_shared: bool = False):
     """Return a refusal string if `path` is under another agent's owner-only
     home/ subdirectory (outbox/working/misc/temp) and `caller` is neither its
     owner nor the gardener; None to proceed — including every path under
-    inbox/ (open by design) and every path outside home/ entirely. Fail-safe:
+    inbox/ (open by design) and every path outside home/ entirely. A name the
+    table does not hold is owner-only too (2026-10-25). Fail-safe:
     never raises, and an unreadable registry falls back to the directory's own
     name as its owner (_home_owner_of's static floor): with no readable registry, only
     that name may write its owner-only folders.
@@ -1686,19 +1911,31 @@ def _home_access_guard(path: str, caller: str, allow_bootstrap: bool = True):
     destination — a dst never exists yet, so the default exemption would
     otherwise be dead code, letting a foreign caller forge a file into an
     owner's home/working/ simply by moving one there (the exact class of gap
-    's live A10 probe found in the agents/ lock on 2026-08-19)."""
+    's live A10 probe found in the agents/ lock on 2026-08-19).
+
+    The rulings of 2026-10-24: it fails closed (an error refuses and is named,
+    R1); it judges the canonical path and refuses any other form (R2); the tree
+    is looked for where home/<slug> resolves, routing included (R3); memory/ is
+    owner-only (R4); allow_shared lets the shared kin write the owner's two
+    records under home/<owner>/memory/ and nothing else (R5)."""
     if not _SELF_MEMORY_GUARD:
         return None
     try:
-        norm = str(path).replace("\\", "/").lstrip("./")
+        norm, bad = _canonical_write_path(path)
+        if bad is not None:
+            return bad
         owner, subdir, _tail = _home_owner_of(norm)
         if not owner:
             return None
-        policy = _HOME_SUBDIR_POLICY.get(subdir)
+        # unlisted is the owner's (the read of rt 0.9.3-rc, 2026-10-25): a folder or a file in home/<slug>/ that the
+        # table does not name is locked like working/; only a folder listed "open" (inbox/) is open, by name
+        policy = _HOME_SUBDIR_POLICY.get(subdir, "owner")
         if policy != "owner":
-            return None  # unrecognized subdir, or explicitly "open" (inbox/) — no lock
+            return None  # explicitly "open" (inbox/) — no lock
         if caller == owner or _is_garden_owner(caller):
             return None
+        if allow_shared and _shared_record_owner(norm, caller) == owner:
+            return None  # the shared-shintai exception: the owner's two records under memory/, nothing else
         # Per-TREE bootstrap, not per-file (2026-09-22). The original rule —
         # "allow if THIS FILE does not exist yet" — could not tell a fresh home
         # from an established one, and a live probe the morning the guard
@@ -1710,7 +1947,14 @@ def _home_access_guard(path: str, caller: str, allow_bootstrap: bool = True):
         # scaffolding via this path therefore gets exactly one write — the
         # one that creates the tree; real scaffolding is the owner's, the
         # gardener's, or git's (the crossings use `git mv`, never this path).
-        if allow_bootstrap and not (REPO_ROOT / "home" / owner).exists():
+        # R3: the tree is looked for where it resolves (a home routed to another repo is there, not in the served
+        # garden), as written and under the owner's own slug; either one there ends the bootstrap.
+        tree_as_written = "/".join(norm.split("/")[:2])
+        if (
+            allow_bootstrap
+            and not _exists_where_written(tree_as_written)
+            and not _exists_where_written(f"home/{owner}")
+        ):
             return None  # bootstrap: the owner's home/<slug>/ tree does not exist yet
         return (
             f"[write refused — '{path}' is {owner}'s own home/{subdir}; only "
@@ -1719,8 +1963,54 @@ def _home_access_guard(path: str, caller: str, allow_bootstrap: bool = True):
             f"home/{owner}/inbox/ instead — that subdirectory is open to "
             f"everyone by design.]"
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return _guard_fault("home lock", path, exc)
+
+
+def _judge(
+    path: str,
+    caller: str,
+    *,
+    allow_bootstrap: bool = True,
+    allow_shared: bool = False,
+    vault: bool = True,
+    action: str = "write",
+    end: str | None = None,
+):
+    """The memory write guard's one decision for a mutating tool: (refusal or None, via). `path` is the canonical
+    path (_canonical_write_path), and it is judged twice: as written, and as every garden address the path RESOLVES
+    to (_logical_forms), so a link inside the garden, or a route, that lands on a guarded record is judged as that
+    record (R2: one path). `via` names the target when the write is allowed only as the target's shared shintai, for
+    the result line. The exception is weighed on the path AS WRITTEN only: a link or a route that lands on one of
+    the two records grants nothing a caller could not get by writing the link's own path (found by the gate's
+    property case, a link to a record; the property is that the shared kin gets an unrelated kin's decision on
+    every path that is not one of the two records). Fails closed: an error refuses (R1). `action` and `end` word
+    the vault guard's refusal (a delete, a move and which end of it); they decide nothing."""
+    try:
+        target = _shared_record_owner(path, caller) if allow_shared else None
+        allow_shared = target is not None
+        forms = [path]
+        try:
+            resolved = _resolve_write(path)
+        except ValueError:  # unresolvable: the tool's own _resolve_write refuses and says why
+            resolved = None
+        # only the resolution is excused: an error while finding where it lands refuses (the read of rt 0.9.3-rc,
+        # 2026-10-25: the suppression also covered _logical_forms, so its failure skipped the second judgment)
+        for logical in _logical_forms(resolved) if resolved is not None else []:
+            if _guard_key(logical) not in {_guard_key(f) for f in forms}:
+                forms.append(logical)
+        if vault:
+            refusal = _vault_guard(path, action, end)
+            if refusal is not None:
+                return refusal, None
+        for form in forms:
+            for guard in (_self_memory_guard, _home_access_guard):
+                refusal = guard(form, caller, allow_bootstrap=allow_bootstrap, allow_shared=allow_shared)
+                if refusal is not None:
+                    return refusal, None
+        return None, target
+    except Exception as exc:
+        return _guard_fault("write guard", path, exc), None
 
 
 def _load_sealed_memory(slug: str) -> str:
@@ -1878,7 +2168,13 @@ def _writer_role(file_path: Path, writer: str, created: bool = False) -> tuple[s
 
 
 def _writer_reseal(
-    p: Path, path: str, content_for_seal: str, caller: str, defaulted: bool, created: bool = False
+    p: Path,
+    path: str,
+    content_for_seal: str,
+    caller: str,
+    defaulted: bool,
+    created: bool = False,
+    shared_of: str | None = None,
 ) -> tuple[str, str]:
     """After a write, re-seal a sealed file AS ITS WRITER (the ruling of 2026-09-25): the
     resolved caller's own key, never the kin whose directory the file sits in or whom its
@@ -1887,6 +2183,10 @@ def _writer_reseal(
     `created`: this write made the file (2026-09-25: creation is authorship, an edit is not)
     — a new file is sealed too, and an uncredited one may be its writer's as owner; an overwrite of
     an uncredited file is held as custodian.
+    `shared_of`: the write was allowed only as the shared shintai of that kin (R5). Then the role is
+    custodian, always, whatever the file credits (the security read of rt 0.9.3-rc, 2026-10-25): the
+    exception grants a write, never ownership, and an owner seal in another kin's body claims what it
+    never granted and looks final. The owner re-seals it as owner before it lands.
     Returns (outcome, detail): 'none' (unsealed; nothing to do), 'sealed', 'stale', 'failed'."""
     seal = _seal_of(p, content_for_seal)
     if seal is None and not created:
@@ -1901,7 +2201,10 @@ def _writer_reseal(
             "the writer is not identified, so nothing is sealed in anyone's name — seal it as yourself:\n"
             f"  {_seal_cmd('<you>', path, p)}"
         )
-    role, why = _writer_role(p, caller, created)
+    if shared_of:
+        role, why = "custodian", ""  # the shared-shintai exception: held for the owner, never owned
+    else:
+        role, why = _writer_role(p, caller, created)
     if role is None:  # the write has landed; nothing is sealed in a role nobody computed
         return "stale", (
             f"the write landed, but the seal role could not be determined: {why}. Nothing was sealed — "
@@ -1909,7 +2212,8 @@ def _writer_reseal(
         )
     ok, err = _auto_sign(p, caller, role)
     if ok:
-        return "sealed", f"{role}: {caller}"
+        held = f" as shared shintai of {shared_of}; {shared_of} re-seals it as owner" if shared_of else ""
+        return "sealed", f"{role}: {caller}{held}"
     return "failed", f"{err}\n  seal it as yourself: {_seal_cmd(caller, path, p)}"
 
 
@@ -2198,17 +2502,18 @@ async def bonsai_write_file(
     _id_guard = _require_identified(_caller, "bonsai_write_file")
     if _id_guard is not None:
         return _id_guard
-    path = path.strip()
+    # one path (R2): the canonical form is what the guards judge and what _resolve_write resolves
+    path, _bad = _canonical_write_path(path)
+    if _bad is not None:
+        return _bad
     content = _strip_injected_preamble(content)
-    _ori_guard = _vault_guard(path)
-    if _ori_guard is not None:
-        return _ori_guard
-    _self_guard = _self_memory_guard(path, _caller)
-    if _self_guard is not None:
-        return _self_guard
-    _home_guard = _home_access_guard(path, _caller)
-    if _home_guard is not None:
-        return _home_guard
+    _refusal, _via = _judge(path, _caller, allow_shared=True)
+    if _refusal is not None:
+        return _refusal
+    # the write log names an exception write, so a scan can tell it from a hole (the read of rt 0.9.3-rc)
+    _via_note = f"shared shintai of {_via}" if _via else ""
+    if _via:
+        _caller_marker += f" as shared shintai of {_via}"
     _sealed = _seal_memory_write("bonsai_write_file", path, content)
     if _sealed is not None:
         return _sealed
@@ -2274,7 +2579,7 @@ async def bonsai_write_file(
                         path,
                         hash_before,
                         hash_before,
-                        note=f"conflict rejected ({n_conf} hunk(s))",
+                        note="; ".join(x for x in (f"conflict rejected ({n_conf} hunk(s))", _via_note) if x),
                         caller=_caller,
                     )
                     return (
@@ -2302,7 +2607,7 @@ async def bonsai_write_file(
 
     size = p.stat().st_size
     hash_after = _blob_store(content)
-    _audit("bonsai_write_file", path, hash_before, hash_after, merged=merged_flag, caller=_caller)
+    _audit("bonsai_write_file", path, hash_before, hash_after, merged=merged_flag, note=_via_note, caller=_caller)
 
     if merged_flag:
         base_msg = (
@@ -2320,7 +2625,9 @@ async def bonsai_write_file(
     # (c) path is within a known agent dir so slug is unambiguous.
     # Constitution files (about-me.md, SKILL.md) are explicitly excluded —
     # changes to an agent's constitution require deliberate gardener ratification.
-    outcome, detail = _writer_reseal(p, path, content, _caller, _caller_defaulted, created=not exists)
+    outcome, detail = _writer_reseal(
+        p, path, content, _caller, _caller_defaulted, created=not exists, shared_of=_via or None
+    )
     if outcome == "sealed":
         _stamp_612(p)  # re-apply: signing rewrote the file
         new_size = p.stat().st_size
@@ -2419,17 +2726,17 @@ async def bonsai_append_file(
     _id_guard = _require_identified(_caller, "bonsai_append_file")
     if _id_guard is not None:
         return _id_guard
-    path = path.strip()
+    # one path (R2): the canonical form is what the guards judge and what _resolve_write resolves
+    path, _bad = _canonical_write_path(path)
+    if _bad is not None:
+        return _bad
     content = _strip_injected_preamble(content)
-    _ori_guard = _vault_guard(path)
-    if _ori_guard is not None:
-        return _ori_guard
-    _self_guard = _self_memory_guard(path, _caller)
-    if _self_guard is not None:
-        return _self_guard
-    _home_guard = _home_access_guard(path, _caller)
-    if _home_guard is not None:
-        return _home_guard
+    _refusal, _via = _judge(path, _caller, allow_shared=True)
+    if _refusal is not None:
+        return _refusal
+    _via_note = f"shared shintai of {_via}" if _via else ""  # named in the write log, as in bonsai_write_file
+    if _via:
+        _caller_marker += f" as shared shintai of {_via}"
     _sealed = _seal_memory_write("bonsai_append_file", path, content)
     if _sealed is not None:
         return _sealed
@@ -2468,7 +2775,14 @@ async def bonsai_append_file(
     _stamp_612(p)
 
     size = p.stat().st_size
-    _audit("bonsai_append_file", path, _blob_store(existing), _blob_store(existing + chunk), caller=_caller)
+    _audit(
+        "bonsai_append_file",
+        path,
+        _blob_store(existing),
+        _blob_store(existing + chunk),
+        note=_via_note,
+        caller=_caller,
+    )
     base_msg = (
         f"Appended: {path}{_where(p)} (+{len(chunk.encode('utf-8'))} bytes → {size} bytes total) "
         f"[caller: {_caller}{_caller_marker} · {_host_head}]"
@@ -2476,7 +2790,7 @@ async def bonsai_append_file(
 
     # ── Auto-sign — same contract as bonsai_write_file ─────────────────────
     # The sign block lives in the existing frontmatter, so check the full file.
-    outcome, detail = _writer_reseal(p, path, existing, _caller, _caller_defaulted)
+    outcome, detail = _writer_reseal(p, path, existing, _caller, _caller_defaulted, shared_of=_via or None)
     if outcome == "sealed":
         _stamp_612(p)  # re-apply: signing rewrote the file
         new_size = p.stat().st_size
@@ -2565,16 +2879,20 @@ async def bonsai_delete_file(
     _id_guard = _require_identified(_caller, "bonsai_delete_file")
     if _id_guard is not None:
         return _id_guard
-    path = path.strip()
+    # one path (R2): the canonical form is what the guards judge and what _resolve_write resolves
+    path, _bad = _canonical_write_path(path)
+    if _bad is not None:
+        return _bad
     #: this tool never called the owner-lock. Writing a peer's
     # working-state was refused while TOMBSTONING it was permitted — the guard
-    # covered the polite verb and not the destructive one.
-    _self_guard = _self_memory_guard(path, _caller)
-    if _self_guard is not None:
-        return _self_guard
-    _home_guard = _home_access_guard(path, _caller)
-    if _home_guard is not None:
-        return _home_guard
+    # covered the polite verb and not the destructive one. A delete never takes
+    # the shared-shintai exception (R5): it stays the owner's. The vault guard runs
+    # on it too (the read of rt 0.9.3-rc, 2026-10-25): a backend the vault is not
+    # wired to does not operate in the vault at all, and a delete through a link
+    # out of the garden removed what lies outside it.
+    _refusal, _via = _judge(path, _caller, action="delete")
+    if _refusal is not None:
+        return _refusal
     try:
         p = _resolve_write(path)
     except ValueError as e:
@@ -2765,8 +3083,13 @@ async def bonsai_move_file(
     _id_guard = _require_identified(_caller, "bonsai_move_file")
     if _id_guard is not None:
         return _id_guard
-    src = src.strip()
-    dst = dst.strip()
+    # one path (R2): each canonical form is what the guards judge and what _resolve_write resolves
+    src, _bad = _canonical_write_path(src)
+    if _bad is not None:
+        return _bad
+    dst, _bad = _canonical_write_path(dst)
+    if _bad is not None:
+        return _bad
     #: src, because renaming a peer's record away is the destructive
     # case the owner-lock was silently permitting. dst, because a move INTO a
     # peer's protected path forges a record in their name. Checking only src
@@ -2776,13 +3099,14 @@ async def bonsai_move_file(
     # exists yet, so under the default exemption the dst check would be dead code
     # in every real case — which is exactly what the live A10 probe caught on
     # 2026-08-19, after the AST check had reported dst as covered.
-    for _guarded, _allow_boot in ((src, True), (dst, False)):
-        _self_guard = _self_memory_guard(_guarded, _caller, allow_bootstrap=_allow_boot)
-        if _self_guard is not None:
-            return _self_guard
-        _home_guard = _home_access_guard(_guarded, _caller, allow_bootstrap=_allow_boot)
-        if _home_guard is not None:
-            return _home_guard
+    # A move never takes the shared-shintai exception (R5): it stays the owner's.
+    # The vault guard runs at both ends (the read of rt 0.9.3-rc, 2026-10-25): a
+    # move into a vault root, or through a link to a root outside the garden, put
+    # plaintext there; a move out of the vault put its content in the plain tree.
+    for _guarded, _allow_boot, _end in ((src, True, "source"), (dst, False, "destination")):
+        _refusal, _via = _judge(_guarded, _caller, allow_bootstrap=_allow_boot, action="move", end=_end)
+        if _refusal is not None:
+            return _refusal
     try:
         src_p = _resolve_write(src)
         dst_p = _resolve_write(dst)

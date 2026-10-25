@@ -1,6 +1,6 @@
 [project]
 name = "bonsai-garden-mcp"
-version = "1.2.1"
+version = "1.3.0"
 description = "Gated file access MCP for a Bonsai Garden."
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
@@ -12,6 +12,25 @@ dependencies = [
     "mcp>=1.30.0,<2.0.0",
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
+]
+
+[tool.uv]
+# Never build from source, at lock time or at the server's first start. With both Macs named as required
+# environments, uv refuses a lock that lacks a wheel for either one (watched: a lock that forces cryptography 50 is
+# refused), and a host that would need a build gets uv's refusal in seconds, not a Rust build that fails and restarts.
+# Supported: macOS on Apple silicon and on Intel. Linux and Windows have wheels in this lock, unproven by it.
+no-build = true
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# An Intel Mac gets no cryptography. No release with its advisories fixed (49.0.0 and on) publishes a wheel for an
+# Intel Mac, and the server never imports it: mcp asks for it only through pyjwt[crypto], for its client's OAuth
+# extension. There, mcp's pyjwt[crypto] becomes pyjwt alone; every other host keeps pyjwt[crypto] and the newest
+# cryptography.
+override-dependencies = [
+    "pyjwt>=2.10.1; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "pyjwt[crypto]>=2.10.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 
 [project.urls]

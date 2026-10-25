@@ -5,7 +5,7 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-19
-// updated: 2026-10-20
+// updated: 2026-10-24
 // ---
 //
 //   node <rt>/tools/rt/host-service.mjs install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>]
@@ -21,7 +21,14 @@
 // desktop app after one turn; install retires that entry from the pot's .mcp.json (the old bytes kept in this garden's
 // service folder) so no session sees two garden MCPs.
 //
-// Linux without PM2: a systemd --user unit is owed, not built; install refuses and says so. Windows: owed.
+// Platforms (PLATFORMS below): macOS on Apple silicon and on Intel, where the MCP's lock is proven to hold a wheel for
+// every package (its pyproject: no-build, and both Macs as required environments); Linux on x86_64 or arm64 with PM2,
+// whose wheels are in the lock but not proven by it. Linux without PM2: a systemd --user unit is owed, not built;
+// install refuses and says so. Windows: owed; refused. Before anything is written, install (and --explain, and the
+// doctor) asks uv whether this host can install the MCP's pins from wheels alone (wheelCheck), and refuses when it
+// cannot: an Intel Mac once got a server that built cryptography from source, failed, and restarted every 10 s.
+// A service that this run started and that does not answer is taken down again, so its launcher does not restart a
+// server that cannot start: the LaunchAgent is unloaded and its plist removed, the PM2 app stopped and saved stopped.
 //
 // install --explain (or --dry-run) says, before anything happens, every file install would write and where, every
 // download (uv's fetch of the MCP's pinned Python packages: how many, from which index, into which folder), what it
@@ -91,6 +98,10 @@ const USAGE = `host-service.mjs — the garden's MCP as a host service, register
               restore the pot's .mcp.json if it is as install left it; the record is kept, marked uninstalled
 
 Binaries by absolute path: BONSAI_PM2, BONSAI_LAUNCHCTL, BONSAI_CLAUDE, BONSAI_UV when set (and then only they), else PATH.
+
+Platforms: macOS on Apple silicon or Intel (the MCP's lock proven to install from wheels on both); Linux on x86_64 or
+arm64 with PM2 (wheels in the lock, not proven by it). install refuses any other, and any host where uv cannot install
+the MCP's pinned packages from wheels alone, before it writes anything.
 
 Exit (install, link-skills, uninstall): 0 done · 2 refused · 3 halt · 64 usage.
 Exit (probe): 0 connected and every kin ok · 1 not connected · 2 answered STOP · 64 usage.`;
@@ -182,6 +193,7 @@ function context(argv, deps = {}) {
     pot: path.resolve(f.pot),
     home,
     platform: deps.platform || process.platform,
+    arch: deps.arch || process.arch,
     uid: deps.uid ?? (typeof process.getuid === 'function' ? process.getuid() : null),
     say: deps.say || ((s) => console.log(s)),
     bins: {
@@ -363,7 +375,7 @@ function definition(ctx, facts, name, port, launcher) {
     LANG: process.env.LANG || 'en_US.UTF-8',
     PATH,
     // rt stays exactly its manifest: its Python environment and its bytecode live outside it (install-runtime's rt-env)
-    UV_PROJECT_ENVIRONMENT: path.join(ctx.home, '.bonsai-garden', 'rt-env', tag),
+    UV_PROJECT_ENVIRONMENT: rtEnvDir(ctx, facts),
     PYTHONPYCACHEPREFIX: path.join(ctx.home, '.bonsai-garden', 'pycache', tag),
   };
   for (const k of ['UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR']) if (process.env[k]) env[k] = process.env[k]; // uv's own dirs, when the host moved them
@@ -414,6 +426,72 @@ function fetchLine(u) {
     `from ${u.indexes.join(', ') || 'its index'} (or uv's cache${u.cache ? `, ${u.cache}` : ''}, if they are there), into ${u.env}; ` +
     `and a Python${u.requires ? ` ${u.requires}` : ''} only if uv finds none on this host, into uv's own python folder`
   );
+}
+
+/** The Python environment the service runs in: outside rt, one per rt (install-runtime's rt-env). */
+const rtEnvDir = (ctx, facts) => path.join(ctx.home, '.bonsai-garden', 'rt-env', `${facts.rtName}-${facts.rtVersion}`);
+
+// ── the platforms rt runs on, and the wheels its MCP needs ───────────────────────────────────────────────────────────────
+
+/** Where the garden's MCP runs. `proven`: the MCP's own pyproject makes uv refuse to lock without a wheel for every
+ *  package there (no-build, and that platform among its required environments). */
+export const PLATFORMS = {
+  'darwin-arm64': { name: 'macOS on Apple silicon', triple: 'aarch64-apple-darwin', proven: true },
+  'darwin-x64': { name: 'macOS on Intel', triple: 'x86_64-apple-darwin', proven: true },
+  'linux-x64': { name: 'Linux on x86_64 with PM2', triple: 'x86_64-unknown-linux-gnu', proven: false },
+  'linux-arm64': { name: 'Linux on arm64 with PM2', triple: 'aarch64-unknown-linux-gnu', proven: false },
+};
+const supported = () =>
+  Object.values(PLATFORMS)
+    .map((p) => `${p.name}${p.proven ? '' : ' (wheels in the lock, not proven by it)'}`)
+    .join('; ');
+
+/**
+ * Can uv install the MCP's pinned packages on this host from wheels alone? Asked of uv itself, never guessed from the
+ * lock's text: a dry run of the service's own sync (`uv sync --frozen --no-build --dry-run --offline --no-cache`) into the
+ * environment the service would use. It downloads, builds and writes nothing; with `downloads: false` it does not fetch
+ * a Python either, and says so when it could not ask without one. `platform` (a uv target triple) asks for another
+ * host than this one: how the tests ask for an Intel Mac from any machine. Returns { ok: true | false | null, line }:
+ * null is "not checked", and says why.
+ */
+export function wheelCheck(ctx, facts, { downloads = false, platform = null } = {}) {
+  const here = PLATFORMS[`${ctx.platform}-${ctx.arch}`];
+  if (!platform && !here)
+    return {
+      ok: false,
+      line: `${ctx.platform} on ${ctx.arch} is not a platform rt runs on; rt runs on ${supported()}`,
+    };
+  if (!ctx.bins.uv) return { ok: null, line: 'not checked: no uv on this host' };
+  const project = path.dirname(facts.server);
+  const args = ['sync', '--frozen', '--no-build', '--dry-run', '--offline', '--no-cache', '--project', project];
+  if (!downloads) args.push('--no-python-downloads');
+  if (platform) args.push('--python-platform', platform);
+  const env = {
+    HOME: ctx.home,
+    PATH: process.env.PATH || '/usr/bin:/bin',
+    UV_PROJECT_ENVIRONMENT: rtEnvDir(ctx, facts),
+  };
+  for (const k of ['UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR', 'LANG']) if (process.env[k]) env[k] = process.env[k];
+  const r = run(ctx.bins.uv, args, { env, timeout: 120000 });
+  const where = platform || here.name;
+  if (r.code === 0)
+    return { ok: true, line: `uv installs every pinned package from a wheel on ${where} (its dry run)` };
+  const nobin = [
+    ...r.out.matchAll(/Distribution `([^`@ ]+)[^`]*` can't be installed because it is marked as `--no-build`/g),
+  ];
+  if (nobin.length)
+    return {
+      ok: false,
+      line:
+        `the MCP's lock holds no wheel for ${nobin.map((m) => m[1]).join(', ')} on ${where}: uv would have to build it ` +
+        "from source, and the server would not start. This rt's lock does not serve this host; an rt whose lock does is owed",
+    };
+  if (/no interpreter found|no python|python downloads are not allowed/i.test(r.out))
+    return {
+      ok: null,
+      line: `not checked: no Python on this host for uv to plan with (install fetches one first, then checks): ${tail(r.out, 160)}`,
+    };
+  return { ok: false, line: `uv's dry run of the MCP's sync failed (exit ${r.code}): ${tail(r.out)}` };
 }
 
 // ── PM2 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1078,6 +1156,33 @@ export async function connectionRows(ctx, facts) {
 
 // ── the verbs ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** A service this run started, and that does not answer, is taken down again: its launcher would restart a server
+ *  that cannot start for as long as the host runs (a LaunchAgent every ThrottleInterval, and again at every login). The
+ *  LaunchAgent is unloaded and its plist removed; the PM2 app is stopped and PM2's list saved with it stopped. The
+ *  record, the registration and the links stay, for install to retry and uninstall to take back. Returns the words
+ *  for the halt line. */
+function takeDown(ctx, def) {
+  if (def.launcher === 'launchd') {
+    const b = run(ctx.bins.launchctl, ['bootout', launchdTarget(ctx, def.label)]);
+    const file = plistFile(ctx, def.label);
+    let removed = false;
+    try {
+      fs.rmSync(file);
+      removed = true;
+    } catch {
+      /* said in the line */
+    }
+    return (
+      `; taken down, so launchd does not restart it: ${b.code === 0 ? 'unloaded' : `launchctl bootout failed (exit ${b.code})`}` +
+      `, ${removed ? `${file} removed` : `${file} not removed`}`
+    );
+  }
+  const st = run(ctx.bins.pm2, ['stop', def.app], { env: cleanEnv(ctx) });
+  if (st.code !== 0) return `; pm2 stop ${def.app} failed (exit ${st.code}): PM2 may restart it; stop it yourself`;
+  const v = run(ctx.bins.pm2, ['save'], { env: cleanEnv(ctx) });
+  return `; taken down, so PM2 does not restart it: ${def.app} stopped${v.code === 0 ? ' and saved stopped' : `, and pm2 save failed (exit ${v.code})`}`;
+}
+
 async function cmdInstall(ctx) {
   const facts = potFacts(ctx);
   const name = ctx.f.name ?? `${facts.gardenName}-garden`;
@@ -1152,7 +1257,11 @@ async function cmdInstall(ctx) {
   // the service
   const def = { ...definition(ctx, facts, name, port, launcher), garden: facts.garden, app, label };
   const fetch = uvFetch(ctx, facts, def);
-  if (explain) return explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep });
+  // the platform and the wheels, before anything is written: --explain refuses as install would. install may let uv
+  // fetch a Python to ask with (the first start would fetch the same one); --explain never does
+  const wheels = wheelCheck(ctx, facts, { downloads: !explain });
+  if (wheels.ok === false) throw refuse(`${wheels.line}; nothing was written`);
+  if (explain) return explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep, wheels });
   const moved = rec?.status === 'installed' && rec.port !== port;
   if (moved) ctx.say(`port: ${rec.port} -> ${port}`);
   const next = {
@@ -1174,6 +1283,7 @@ async function cmdInstall(ctx) {
     installed: rec?.status === 'installed' ? rec.installed : new Date().toISOString(),
     updated: new Date().toISOString(),
   };
+  ctx.say(`wheels: ${wheels.line}`);
   ctx.say(`download: ${fetchLine(fetch)}`); // said before the service starts, as --explain says it
   const changed = launcher === 'pm2' ? pm2Install(ctx, def, rec) : launchdInstall(ctx, def, rec);
   if (launcher === 'launchd') next['plist-sha256'] = sha256(fs.readFileSync(plistFile(ctx, label)));
@@ -1197,7 +1307,9 @@ async function cmdInstall(ctx) {
   const ans = changed || moved ? await waitAnswer(def.url, name, wait) : await answering(def.url, name);
   if (!ans.ok)
     throw halt(
-      `installed and registered, but ${def.url} does not answer as ${name} (${ans.why}); read ${path.join(serviceDir(ctx.home, facts.garden), 'mcp.err.log')}, then probe`,
+      `installed and registered, but ${def.url} does not answer as ${name} (${ans.why})` +
+        (changed || moved ? takeDown(ctx, def) : '') +
+        `; read ${path.join(serviceDir(ctx.home, facts.garden), 'mcp.err.log')}, then install again, or uninstall`,
     );
   ctx.say(`answers: ${def.url} as ${ans.info.name}`);
   ctx.say(
@@ -1211,7 +1323,7 @@ async function cmdInstall(ctx) {
 }
 
 /** install --explain: every write, run, download and registration install would make, from where to where; none made. */
-function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep }) {
+function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep, wheels }) {
   const sd = serviceDir(ctx.home, facts.garden);
   const row = (verb, what, why) => ctx.say(`  ${verb.padEnd(9)} ${what}${why ? `   ${why}` : ''}`);
   ctx.say(
@@ -1241,6 +1353,7 @@ function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep }) {
   row('write', recordFile(ctx.home, facts.garden), "this service's record (uninstall reads it)");
   row('write', `${path.join(sd, 'mcp.out.log')}, mcp.err.log`, "the service's logs");
   row('run', `${def.cmd} ${def.args.join(' ')}`, `the garden's MCP on ${def.url}, in ${facts.pot}`);
+  row('check', `wheels: ${wheels.line}`);
   row('download', fetchLine(fetch));
   row('write', def.env.PYTHONPYCACHEPREFIX, "the server's bytecode, outside rt");
   if (reg && reg.type === 'http' && reg.url === def.url)
