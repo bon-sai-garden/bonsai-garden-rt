@@ -5,7 +5,7 @@
 # type: script
 # tended-by: baisai
 # created: 2026-09-13
-# updated: 2026-10-25
+# updated: 2026-11-06
 # copyright: © 2026 Bonsai Garden · bon-sai.garden
 # ---
 """
@@ -835,8 +835,8 @@ else:
 # ---------------------------------------------------------------------------
 # Deployment context (2026-09-14)
 # ---------------------------------------------------------------------------
-# Nothing in the boot payload told an agent where it's running or which Buzz relay it
-# answers to — an agent over-credited its own environment twice in one day for exactly this
+# Nothing in the boot payload told a kin where the server runs or which Buzz relay the
+# server answers to — a kin over-credited the environment twice in one day for exactly this
 # reason (see tools/bonsai-mcp/deployment_context.py's own docstring). Same directory as
 # this file, so a plain import resolves when launched as `python server.py`; the fallback
 # covers the same PM2/launchd cwd cases as repo_routing/repo_skip_dirs above.
@@ -1302,7 +1302,7 @@ def _infer_slug(path: str) -> str | None:
     Anything outside agents/ (lore/, rituals/, etc.) → None
     """
     # Registry first (D6): the directory name is NOT always the owner's
-    # slug — a kin may live at a directory that is not its slug, so deriving the slug from the path
+    # slug — a kin may live at a directory that is not the kin's slug, so deriving the slug from the path
     # text alone attributed writes there to the directory name, a member that does not
     # exist, and handed sign.py --as <dirname>. One resolver for authorization and
     # attribution, so the two cannot drift apart again.
@@ -1349,18 +1349,172 @@ def _rm_bridge():
     return _RM_BRIDGE or None
 
 
-def _seal_memory_write(tool_name: str, path: str, content: str):
-    """Option A (spec-git-vault-memory §9): if `path` is a memory-tree write for a sealed-memory
-    agent, seal it to the vault instead of letting plaintext land in the repo. Returns a result
-    string (sealed/handled) or None (proceed with the normal write). Flag-gated (RM_REMOTE),
-    default-off, fail-safe — never raises."""
-    rm = _rm_bridge()
-    if rm is None:
-        return None
+# Files in a sealed kin's memory tree that are plaintext by design (a guard, an index), compared casefolded. The same
+# three names the vault bridge lets through; here so that the decision "is this a sealed memory path" does not wait on
+# the bridge being there.
+_SEALED_MEM_ALLOW = frozenset({"readme.md", ".gitkeep", "memory.md"})
+
+
+def _sealed_memory_slugs() -> dict:
+    """{slug: {owner root, guard key}} for every registry entry whose `memory` is anything but absent or `local`: the
+    kin whose memory is sealed to a vault and never kept as a plain file (`remote` today; a value this code does not
+    know is sealed too, never read as "not sealed"). Read afresh on every call (a kin marked after the process
+    started is sealed from that write on) and from the registry alone, never from the bridge: the bridge is what may
+    be missing. Raises on a registry that cannot be read or whose sealed entry cannot be understood; the caller
+    refuses (fail closed, as the owner locks do)."""
+    import json as _json
+
+    data = _json.loads((REPO_ROOT / "agents" / "registry.json").read_text(encoding="utf-8"))
+    entries = data.get("agents") or []
+    if isinstance(entries, dict):
+        entries = [dict(v or {}, slug=k) for k, v in entries.items()]
+    if not isinstance(entries, list):
+        raise ValueError("the registry's agents are neither a list nor a table")
+    sealed: dict = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get("memory") or "").strip().lower() in ("", "local"):
+            continue
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            raise ValueError("a registry entry with sealed memory has no usable slug")
+        slug = slug.strip().lower()
+        roots = {f"agents/{slug}"}  # the plain shape is always sealed, whatever the entry's path says
+        rp = str(entry.get("path") or "").strip().strip("/")
+        if rp.startswith("agents/") and rp != "agents/shared":
+            roots.add(_guard_key(rp))
+        sealed[slug] = roots
+    return sealed
+
+
+def _sealed_body_tails(path, sealed: dict) -> list:
+    """[(slug, tail)] for each sealed kin's body that `path` (one repo-relative form) is, or is inside: tail is what
+    lies below the body's root, [] for the root itself. Matched on the guard's key, so a letter-case spelling is the
+    same tree; the retired nested shape (agents/<parent>/sub-agents/<slug>/) is still one body."""
+    parts = [x for x in _guard_key(path).split("/") if x and x != "."]
+    found = []
+    for slug, roots in sealed.items():
+        tail = None
+        for root in roots:
+            rp = root.split("/")
+            if parts[: len(rp)] == rp:
+                tail = parts[len(rp) :]
+                break
+        if tail is None and len(parts) >= 4 and parts[0] == "agents" and parts[2] == "sub-agents" and parts[3] == slug:
+            tail = parts[4:]
+        if tail is not None:
+            found.append((slug, tail))
+    return found
+
+
+def _sealed_memory_agent(path, sealed: dict) -> str | None:
+    """The sealed kin whose memory `path` (one repo-relative form) is, else None: a `memory` directory of the kin's body
+    (the name itself included, so a file or a moved directory cannot take its place) and anything under one, and the
+    body's role-level patterns.md (it seals like memory). Only the guard and index files at the top of a memory tree
+    (_SEALED_MEM_ALLOW) are not memory."""
+    for slug, tail in _sealed_body_tails(path, sealed):
+        if not tail:
+            continue
+        guard_file = len(tail) == 2 and tail[0] == "memory" and tail[1] in _SEALED_MEM_ALLOW
+        if tail == ["patterns.md"] or ("memory" in tail and not guard_file):
+            return slug
+    return None
+
+
+def _sealed_forms(path) -> list:
+    """`path` as written and as every garden address it RESOLVES to (a link inside the garden, or a route): the forms a
+    guard judges, so that a path that lands in a guarded tree is judged as that tree. Raises on a fault."""
+    forms = [path]
     try:
-        return rm.intercept_mcp_write(tool_name, path, content)
-    except Exception:
+        resolved = _resolve_write(path)
+    except ValueError:  # unresolvable: the tool's own _resolve_write refuses and says why
+        resolved = None
+    if resolved is not None:
+        for logical in _logical_forms(resolved):
+            if _guard_key(logical) not in {_guard_key(f) for f in forms}:
+                forms.append(logical)
+    return forms
+
+
+def _sealed_memory_hit(path):
+    """(slug, form) when `path` is a sealed kin's memory, as written or as any garden address it RESOLVES to (a link
+    inside the garden, or a route, that lands in the tree is the tree: R2, one path); else None. Raises on a fault."""
+    forms = _sealed_forms(path)
+    if not any(_guard_key(f).lstrip("./").startswith("agents/") for f in forms):
+        return None  # no form is under agents/: nothing to read the registry for
+    sealed = _sealed_memory_slugs()
+    for form in forms:
+        slug = _sealed_memory_agent(form, sealed)
+        if slug:
+            return slug, form
+    return None
+
+
+def _sealed_refusal(path, reason: str) -> str:
+    return (
+        f"[memory write refused — '{path}' is a sealed kin's memory (the kin's registry entry marks that memory sealed) and "
+        f"{reason}. Nothing was written, so that no plaintext is stored. This was NOT performed.]"
+    )
+
+
+def _seal_memory_write(tool_name: str, path: str, content: str):
+    """Option A (spec-git-vault-memory §9): a write to a sealed kin's memory is sealed to the vault instead of landing
+    in the repo as plaintext. Returns a result string (sealed, or refused) or None (proceed with the normal write).
+
+    Fail closed: whether a path is a sealed kin's memory is decided here, from the registry, and not by the bridge. A
+    sealed memory path is sealed by the bridge or refused; it never proceeds to the plain write, whatever the bridge
+    is or does: absent, unimportable, raising, or answering None, an empty or a blank string, or anything but text. A
+    path the registry does not mark is the bridge's alone."""
+    try:
+        hit = _sealed_memory_hit(path)
+    except Exception as exc:
+        return _guard_fault("sealed-memory guard", path, exc)
+    rm = _rm_bridge()
+    if hit is None:
+        if rm is None:
+            return None
+        try:
+            return rm.intercept_mcp_write(tool_name, path, content)
+        except Exception:
+            return None
+    if rm is None:
+        return _sealed_refusal(path, "the vault bridge is not loaded on this server, so it cannot be sealed")
+    try:
+        sealed = rm.intercept_mcp_write(tool_name, path, content)
+    except Exception as exc:
+        return _sealed_refusal(path, f"the vault bridge failed on it ({type(exc).__name__})")
+    if not (isinstance(sealed, str) and sealed.strip()):
+        return _sealed_refusal(path, "the vault bridge did not take it")
+    return sealed
+
+
+def _sealed_destination_refusal(src: str, dst: str) -> str | None:
+    """A move into a sealed kin's memory tree stores plaintext there as surely as a write does; a move onto the kin's
+    body root brings a whole body, memory included, into place; and a directory moved anywhere below a body root can
+    carry a memory tree of its own in with it, which the destination's name does not show. All three are refused,
+    whatever the bridge is. A file moved below a body root, outside its memory, is not. Fails closed. None to proceed."""
+    try:
+        hit = _sealed_memory_hit(dst)
+        what = "memory"
+        if hit is None:
+            sealed = _sealed_memory_slugs()
+            tails = [t for form in _sealed_forms(dst) for _slug, t in _sealed_body_tails(form, sealed)]
+            if any(not t for t in tails):
+                hit, what = ("", dst), "body root"
+            elif tails:
+                try:
+                    carries_dir = _resolve_write(src).is_dir()
+                except ValueError:  # unresolvable: the tool's own _resolve_write refuses and says why
+                    carries_dir = False
+                if carries_dir:
+                    hit, what = ("", dst), "body, and a directory can carry a memory tree in with it"
+    except Exception as exc:
+        return _guard_fault("sealed-memory guard", dst, exc, action="move")
+    if hit is None:
         return None
+    return (
+        f"[move refused — its destination '{dst}' is in a sealed kin's {what} (the kin's registry entry marks that memory "
+        f"sealed), and a move there would store plaintext. Nothing was moved. This was NOT performed.]"
+    )
 
 
 # ── Encrypted-vault guard ─────────────────────────────────────────────────────
@@ -1580,7 +1734,7 @@ def _owner_of(path) -> tuple:
     a nested kin's own agents/<slug>/). Never raises.
 
     Note this returns the REGISTRY's slug, not the directory name. (If a kin was renamed, the
-    registry holds its canonical slug and the old name is only
+    registry holds the kin's canonical slug and the old name is only
     an alias — so this matters whenever a rename leaves the two apart,
     not just for one example.)
 
@@ -1705,7 +1859,9 @@ def _shared_record_owner(path, caller) -> str | None:
         exact = False
         for base in _shared_record_bases(target):
             name = path[len(base) + len("/journal/") :] if path.startswith(f"{base}/journal/") else ""
-            if path == f"{base}/working-state.md" or (len(name) > len(".md") and "/" not in name and name.endswith(".md")):
+            if path == f"{base}/working-state.md" or (
+                len(name) > len(".md") and "/" not in name and name.endswith(".md")
+            ):
                 exact = True
                 break
         if not exact:
@@ -2014,16 +2170,34 @@ def _judge(
 
 
 def _load_sealed_memory(slug: str) -> str:
-    """Option A read-side: the decrypted sealed-memory block for a registry-sealed agent, to inject
-    at session start so a Cowork activation carries the agent's real (episodic) memory. Returns ''
-    for non-sealed agents or any failure (fail-safe — never raises)."""
-    rm = _rm_bridge()
-    if rm is None or not slug:
+    """Option A read-side: the sealed-memory block for a registry-sealed agent, to inject at session start so an
+    activation carries the agent's episodic memory. Returns '' for an agent the registry does not mark as sealed (a
+    `memory` value of anything but absent or `local`). For a marked agent it returns the block, or one line that
+    begins `NOT LOADED: ` and gives the reason: the vault bridge is not loaded on this server, it failed, or it
+    returned nothing (an unreachable vault, an empty one, and a bridge whose own sealed set does not know the agent
+    all answer alike). A memory that could not be read is said, never left to read as an empty one. Never raises.
+    This only reports: it does not open a vault, and who may ask for a read is not decided here."""
+    slug = (slug or "").strip().lower()
+    if not slug:
         return ""
     try:
-        return rm.rm_load_sealed(slug) or ""
-    except Exception:
-        return ""
+        if slug not in _sealed_memory_slugs():
+            return ""
+    except Exception as exc:
+        return f"NOT LOADED: whether this agent's memory is sealed could not be decided ({type(exc).__name__})"
+    rm = _rm_bridge()
+    if rm is None:
+        return "NOT LOADED: the vault bridge is not loaded on this server, so no sealed memory can be read"
+    try:
+        block = rm.rm_load_sealed(slug)
+    except Exception as exc:
+        return f"NOT LOADED: the vault bridge failed on the read ({type(exc).__name__})"
+    if not block:
+        return (
+            "NOT LOADED: the vault bridge returned no episodes (the vault is unreachable, or holds none, or the "
+            "bridge's own sealed set does not know this agent)"
+        )
+    return block
 
 
 _SIGNER = None
@@ -3107,6 +3281,9 @@ async def bonsai_move_file(
         _refusal, _via = _judge(_guarded, _caller, allow_bootstrap=_allow_boot, action="move", end=_end)
         if _refusal is not None:
             return _refusal
+    _sealed_dst = _sealed_destination_refusal(src, dst)
+    if _sealed_dst is not None:
+        return _sealed_dst
     try:
         src_p = _resolve_write(src)
         dst_p = _resolve_write(dst)
@@ -4066,7 +4243,7 @@ def _agent_root(slug: str) -> Path | None:
         every agent regardless of what the registry said. Six agents live at a
         nested path (the nested *-shin members) —
         for them the guess pointed at an unrelated directory. For one of them that
-        directory happened to hold a stray file (a tombstone it wrote there by
+        directory happened to hold a stray file (a tombstone written there by
         mistake), so the wrong path *silently succeeded* with the wrong content
         instead of failing loudly — worse than simply finding nothing.
 
@@ -4593,7 +4770,7 @@ def _session_start_blocking(agent_slug: str, verbose: bool, ctx: Context | None)
         sections.append(
             f"=== {slug} / working-state === "
             f"ERROR: '{slug}' is not a recognized agent in agents/registry.json. "
-            f"Check for a typo. A kin is registered by its planting (core's rite), which writes its row in the "
+            f"Check for a typo. A kin is registered by the kin's planting (core's rite), which writes the kin's row in the "
             f"garden's agents/registry.json; nothing here registers one."
         )
     elif slug:

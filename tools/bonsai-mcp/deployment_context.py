@@ -87,8 +87,8 @@ def host_and_head(repo_root: Path) -> str:
 def deployment_context_text(repo_root: Path) -> str:
     """
     Best-effort, fail-safe description of where the MCP server process is running, what
-    commit its checkout is sitting at, and which Buzz relay it currently answers to, so an
-    agent never has to guess or over-credit its environment. Never raises: any lookup failure
+    commit the checkout is sitting at, and which Buzz relay the server currently answers to, so a
+    kin never has to guess or over-credit the environment. Never raises: any lookup failure
     degrades a field to 'unknown' rather than blocking a boot.
 
     Relay hosted/self-hosted truth is read from tools/buzz-nest/buzz-identity-map.json's own
@@ -140,7 +140,7 @@ def newest_folder_evidence_reason(root: Path) -> str | None:
     named example is a nested *-shin like a sub-agent kin, whose real path is
     agents/<parent>/sub-agents/<slug>, not a flat agents/<slug> guess) got the exact same
     silent None as an agent whose folder is simply empty of new evidence — so the stale-boot
-    banner could never fire for the broken-path case, and the agent never knew its own
+    banner could never fire for the broken-path case, and the kin never knew the
     freshness check had quietly failed to run.
     """
     if not root.exists():

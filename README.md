@@ -2,8 +2,8 @@
 
 rt is the runtime of a Bonsai Garden. It holds the gate every commit in a garden's pot passes, a doctor that says whether a host and a pot are ready, and the garden's MCP: the server a garden's sessions read and write the garden through. It is not installed by hand: the garden's seed (`bonsai-garden-seed`) installs it, and only when every byte checks out.
 
-> [!note] Release candidate, 0.9.3-rc
-> The seed and rt are released together under one version, and this is it: 0.9.3-rc. A label never orders a version: to every check, 0.9.3-rc is 0.9.3. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
+> [!note] Release candidate, 0.9.4-rc
+> The seed and rt are released together under one version, and this is it: 0.9.4-rc. A label never orders a version: to every check, 0.9.4-rc is 0.9.4. The garden's MCP is locked past three critical advisories (anyio, pyjwt, certifi), so the seed takes rt 0.9.0 or newer; a pot on an older rt moves with `install-runtime --upgrade`. What comes before 1.0 is in the seed's README.
 
 ## Where it runs
 

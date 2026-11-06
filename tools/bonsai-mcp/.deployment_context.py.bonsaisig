@@ -2,11 +2,11 @@
   "format": "bonsaisig/2",
   "id": "01M3BT3KSC8TTPVPSFYHSXSA6R",
   "signer": "baisai",
-  "role": "custodian",
+  "role": "owner",
   "fingerprint": "03001aee3fa7a4bd5177ce1e87c73ad3",
-  "timestamp": "2026-10-17T09:49:21Z",
+  "timestamp": "2026-11-06T16:40:39Z",
   "algorithm": "ed25519+blake2b512",
   "target": "tools/bonsai-mcp/deployment_context.py",
-  "file-hash": "8905525a6f603ad6c22db536968efa2c95d959637afd3e3c14b7ae41139c26d2409b2593a92e161c341e3232c5a4399ee80f089407df1837760c4159abb89f9c",
-  "signature": "NABd1bhHzDXsSOR3g1cuR0VbJhW8974ZvjKxHda8CjBJVURyOU7GZRgNWoXWYwR/EzhdAqjWP0KBAmBwjHHLAA=="
+  "file-hash": "21c8f2b29b83066feb13bec3618cdb0db610018ee62ec34caa444173e042ea756bfdf0614a40aaee80b10675366ad6b286c80ce462aa46ab098b69841f3c4a79",
+  "signature": "d1kItdpqbbVEz1xjYLpJ1WdHisL6FCZTN00cHbHzkvJKbwiohrnHx/Ek5AglHVqNw+t6udJCh1BoKTqq2E79CQ=="
 }

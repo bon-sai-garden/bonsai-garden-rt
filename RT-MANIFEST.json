@@ -1,7 +1,7 @@
 {
   "format": "bonsai-garden-rt-manifest/2",
   "name": "bonsai-garden-rt",
-  "version": "0.9.3-rc",
+  "version": "0.9.4-rc",
   "files": [
     {
       "path": ".LICENSE-CC-BY-SA-4.0.bonsaisig",
@@ -41,7 +41,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "afa814c9a5b18f0e3589f2c978636076add62a4e9d235a3c450ffdefc4d70d73",
+      "sha256": "79e7cdb7a10719a3ae82721d29429e84348e1af3c4b69b9298e52c50df20672f",
       "bytes": 6745,
       "mode": "100644"
     },
@@ -53,8 +53,8 @@
     },
     {
       "path": "tools/bonsai-mcp/.deployment_context.py.bonsaisig",
-      "sha256": "4b6da5451bc3c3b58daea98ae7a54c3c03d5a637b83e547cc933ded67c89ebee",
-      "bytes": 550,
+      "sha256": "5b464cb483ad2aee7a5ea46ed132d7975a84b52bdab70b3bbbde61ff392e3796",
+      "bytes": 546,
       "mode": "100644"
     },
     {
@@ -83,7 +83,7 @@
     },
     {
       "path": "tools/bonsai-mcp/.server.py.bonsaisig",
-      "sha256": "68c037aaa146b9017d0c18ffcee82a63c87b3cdcc54839439a20aeead5096091",
+      "sha256": "6a11db6ba09e8349c8fda8fe27f0fdc6029c902bf15a073ef494deff2465c33f",
       "bytes": 534,
       "mode": "100644"
     },
@@ -107,8 +107,8 @@
     },
     {
       "path": "tools/bonsai-mcp/deployment_context.py",
-      "sha256": "300084957489d264837449b4882f816eeb9094285d967399aec96387afb27627",
-      "bytes": 7007,
+      "sha256": "910fefc960eeb17a70e7c2242969d267c8a8d344a77571b66c2f61c5cb767327",
+      "bytes": 7006,
       "mode": "100644"
     },
     {
@@ -137,8 +137,8 @@
     },
     {
       "path": "tools/bonsai-mcp/server.py",
-      "sha256": "8f4b806dbdaf47f236d2d2a4beaed9da216a1f1506f1c740f55f8500ce08b98b",
-      "bytes": 242254,
+      "sha256": "f28bebe52e4274694f508dd0a0bd60f5a2def0946e0a26c0b864c6964100b48d",
+      "bytes": 251611,
       "mode": "100644"
     },
     {
