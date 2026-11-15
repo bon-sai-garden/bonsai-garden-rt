@@ -59,6 +59,7 @@ Schema shape:
 
 import argparse
 import contextlib
+import contextvars
 import datetime as _dt
 import difflib
 import fcntl
@@ -2247,6 +2248,12 @@ def _sign_module():
     return sg.module()
 
 
+# Whether the write being sealed MADE its file (core's role rule: creation is authorship, an edit is not). Set by _writer_reseal
+# around its one call, read by _auto_sign: a pot's signer passes it to core, which recomputes the role and refuses one above its
+# own. A context variable, not a parameter, so _auto_sign keeps the three-argument shape the suites replace it with.
+_SEAL_CREATED: "contextvars.ContextVar[bool]" = contextvars.ContextVar("seal_created", default=False)
+
+
 def _auto_sign(file_path: Path, slug: str, role: str = "owner") -> tuple[bool, str]:
     """
     Re-seal a file via sign.py sign --hkdf --as <slug> --role <role>: seal v2,
@@ -2254,7 +2261,7 @@ def _auto_sign(file_path: Path, slug: str, role: str = "owner") -> tuple[bool, s
     ever embedded. The MCP server runs on the host Mac, so the Keychain is reachable.
     Returns (success, error_message).
     """
-    return _signer().sign(file_path, slug, role, REPO_ROOT)
+    return _signer().sign(file_path, slug, role, REPO_ROOT, created=_SEAL_CREATED.get())
 
 
 _CREDIT_MOD = None
@@ -2341,6 +2348,19 @@ def _writer_role(file_path: Path, writer: str, created: bool = False) -> tuple[s
         return None, f"{cp} seal_role raised {type(exc).__name__}: {exc}"
 
 
+def _own_home_of_pot(path: str, caller: str) -> bool:
+    """A kin's write into the kin's OWN home in a planted garden (`home/<caller>/...`): sealed even when the file had no seal before.
+    A planted garden's seed writes a kin's home files (working-state.md, the inbox's acknowledged.md) unsealed, and the
+    gardener's commit gate refuses an unsealed staged file, so a kin whose memory writes stayed unsealed would hand him a seal
+    to make at every commit: the opposite of working through the garden's own runtime. The origin keeps the rule that an
+    unsealed file is left alone; this is the pot's, and only for the kin's own home: never another's, never the body, never
+    the rest."""
+    if not _is_pot() or not caller or caller == "unidentified":
+        return False
+    parts = PurePosixPath(str(path).replace("\\", "/")).parts
+    return len(parts) >= 3 and parts[0] == "home" and parts[1] == caller
+
+
 def _writer_reseal(
     p: Path,
     path: str,
@@ -2363,7 +2383,7 @@ def _writer_reseal(
     never granted and looks final. The owner re-seals it as owner before it lands.
     Returns (outcome, detail): 'none' (unsealed; nothing to do), 'sealed', 'stale', 'failed'."""
     seal = _seal_of(p, content_for_seal)
-    if seal is None and not created:
+    if seal is None and not created and not _own_home_of_pot(path, caller):
         return "none", ""
     if _is_constitution_file(path):
         return "stale", (
@@ -2384,7 +2404,11 @@ def _writer_reseal(
             f"the write landed, but the seal role could not be determined: {why}. Nothing was sealed — "
             f"seal it as yourself:\n  {_seal_cmd(caller, path, p)}"
         )
-    ok, err = _auto_sign(p, caller, role)
+    tok = _SEAL_CREATED.set(bool(created))
+    try:
+        ok, err = _auto_sign(p, caller, role)
+    finally:
+        _SEAL_CREATED.reset(tok)
     if ok:
         held = f" as shared shintai of {shared_of}; {shared_of} re-seals it as owner" if shared_of else ""
         return "sealed", f"{role}: {caller}{held}"

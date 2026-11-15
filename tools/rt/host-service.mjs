@@ -5,7 +5,7 @@
 // type: script
 // tended-by: baisai
 // created: 2026-10-19
-// updated: 2026-10-24
+// updated: 2026-11-09
 // ---
 //
 //   node <rt>/tools/rt/host-service.mjs install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>]
@@ -16,7 +16,8 @@
 //
 // A garden's MCP runs as one long-lived HTTP service on 127.0.0.1, one port and one name per garden, so that two gardens
 // can live on one host. PM2 runs it where PM2 is present, else a LaunchAgent on macOS. It is registered once, at user
-// level, with Claude (`claude mcp add --scope user --transport http <name> <url>`): every session on this host reaches it,
+// level, with Claude (`claude mcp add --scope user --transport http <name> <url>`), or with --client codex with Codex alone
+// (`codex mcp add <name> --url <url>`, 2026-11-08; Claude is then not touched): every session on this host reaches it,
 // and none starts it. The shape it replaces, a server per session started from the pot's own .mcp.json, is dropped by the
 // desktop app after one turn; install retires that entry from the pot's .mcp.json (the old bytes kept in this garden's
 // service folder) so no session sees two garden MCPs.
@@ -84,20 +85,23 @@ const usage = (m) => new Exit(64, m);
 
 const USAGE = `host-service.mjs — the garden's MCP as a host service, registered once at user level
 
-  install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--wait <s>] [--explain]
+  install     --pot <dir> [--name <mcp name>] [--port <n>] [--launcher pm2|launchd] [--client claude|codex] [--wait <s>] [--explain]
               --explain (or --dry-run): say every write and every download first, and do none of them;
               install's alone: any other verb given either refuses it (64), and nothing is done
               run the garden's MCP on 127.0.0.1 under PM2 (else a LaunchAgent on macOS), register it with Claude at
               user level under the garden's own name (default <garden name>-garden), retire the pot's per-session
               .mcp.json entry, and link each kin's skill into the pot. Idempotent: a second run changes nothing.
+              --client codex (install's alone): register it with Codex instead (codex mcp add <name> --url <url>, in
+              $CODEX_HOME or ~/.codex), and with Claude not at all: Claude's config, the pot's .mcp.json and the pot's
+              .claude/skills are not touched. The record names the client; probe and uninstall follow it.
   probe       --pot <dir> [--kin <slug>[,<slug>...]]
               connected? (installed, running, answering, registered, not turned off here, not shadowed), then each kin's
               integrity line through the service: ok, or the STOP it answered
-  link-skills --pot <dir>   only the skill links (a kin planted after install)
+  link-skills --pot <dir>   only the skill links (a kin planted after install); none for a garden installed --client codex
   uninstall   --pot <dir>   the way back: stop and remove the service, unregister it, remove the links install made,
               restore the pot's .mcp.json if it is as install left it; the record is kept, marked uninstalled
 
-Binaries by absolute path: BONSAI_PM2, BONSAI_LAUNCHCTL, BONSAI_CLAUDE, BONSAI_UV when set (and then only they), else PATH.
+Binaries by absolute path: BONSAI_PM2, BONSAI_LAUNCHCTL, BONSAI_CLAUDE, BONSAI_CODEX, BONSAI_UV when set (and then only they), else PATH.
 
 Platforms: macOS on Apple silicon or Intel (the MCP's lock proven to install from wheels on both); Linux on x86_64 or
 arm64 with PM2 (wheels in the lock, not proven by it). install refuses any other, and any host where uv cannot install
@@ -108,7 +112,7 @@ Exit (probe): 0 connected and every kin ok · 1 not connected · 2 answered STOP
 
 // ── arguments ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-const KNOWN = new Set(['pot', 'name', 'port', 'launcher', 'wait', 'kin']);
+const KNOWN = new Set(['pot', 'name', 'port', 'launcher', 'wait', 'kin', 'client']);
 const SWITCHES = new Set(['explain', 'dry-run']); // flags that take no value, and install's alone
 const VERBS = new Set(['install', 'probe', 'link-skills', 'uninstall']);
 
@@ -185,11 +189,16 @@ function context(argv, deps = {}) {
   // runs for real under a switch it does not read
   const sw = verb !== 'install' && VERBS.has(verb) ? [...SWITCHES].find((s) => f[s]) : undefined;
   if (sw) throw usage(`${verb} takes no --${sw}, only install does; nothing was done`);
+  if (verb !== 'install' && VERBS.has(verb) && f.client !== undefined)
+    throw usage(`${verb} takes no --client, only install does (the record names it); nothing was done`);
+  const client = f.client ?? 'claude';
+  if (!['claude', 'codex'].includes(client)) throw usage(`--client ${client}: claude or codex`);
   if (!f.pot) throw usage(`${verb} needs --pot <dir>`);
   const home = deps.home || os.homedir();
   return {
     verb,
     f,
+    client,
     pot: path.resolve(f.pot),
     home,
     platform: deps.platform || process.platform,
@@ -201,6 +210,7 @@ function context(argv, deps = {}) {
       launchctl:
         findBin('launchctl', 'BONSAI_LAUNCHCTL', home) || (fs.existsSync('/bin/launchctl') ? '/bin/launchctl' : null),
       claude: findBin('claude', 'BONSAI_CLAUDE', home),
+      codex: findBin('codex', 'BONSAI_CODEX', home),
       uv: findBin('uv', 'BONSAI_UV', home),
       git: findBin('git', 'BONSAI_GIT', home) || 'git',
       node: process.execPath,
@@ -687,7 +697,135 @@ function registration(ctx, name) {
   return e ? { type: e.type || (e.command ? 'stdio' : '?'), url: e.url || null, command: e.command || null } : null;
 }
 
+// ── Codex: the same service, registered in Codex's own config (2026-11-08) ─────────────────────────────────────────
+
+const codexConfigFile = (ctx) => path.join(process.env.CODEX_HOME || path.join(ctx.home, '.codex'), 'config.toml');
+
+/** The `[mcp_servers.<name>]` table of the user's Codex config.toml, read as text: {type, url, command}, or null. Only url and
+ *  command are read, in the table form with double quotes; this is the fallback when no codex CLI answers (codexRegistration). */
+function codexScrape(ctx, name) {
+  let text;
+  try {
+    text = fs.readFileSync(codexConfigFile(ctx), 'utf8');
+  } catch {
+    return null;
+  }
+  const heads = new Set([`[mcp_servers.${name}]`, `[mcp_servers."${name}"]`]);
+  const lines = text.split('\n');
+  const i = lines.findIndex((x) => heads.has(x.trim()));
+  if (i < 0) return null;
+  let url = null;
+  let command = null;
+  for (const x of lines.slice(i + 1)) {
+    const t = x.trim();
+    if (t.startsWith('[')) break;
+    const m = /^(url|command)\s*=\s*"([^"]*)"/.exec(t);
+    if (m && m[1] === 'url') url = m[2];
+    else if (m) command = m[2];
+  }
+  return { type: url ? 'http' : command ? 'stdio' : '?', url, command };
+}
+
+/** What `codex mcp get <name> --json` says for a session opened in <cwd>, and how that was learned: {via, entry, why}.
+ *  via 'codex': Codex answered, and entry is {type, url, command, enabled}, or null when Codex has none by that name. It reads
+ *  the user's config and, for a trusted project, that project's .codex/config.toml over it key by key, and says whether the
+ *  entry is turned off; with the user's home as cwd that is the user-level entry, with the pot as cwd what a session there gets
+ *  (found in a read, 2026-11-09: `enabled = false` and a pot-level entry both made the file scrape say "connected"
+ *  where Codex would not load the service). via 'error': the CLI ran and failed for another reason, `why` holds its words
+ *  (a pot-level table Codex cannot load fails the call), and the user-level file is scraped for the entry, enabled null.
+ *  via 'file': no codex CLI was found, or its answer was not JSON; the same scrape. */
+function codexLookup(ctx, name, cwd = ctx.home) {
+  let via = 'file';
+  let why = null;
+  let code = null;
+  if (ctx.bins.codex) {
+    const r = run(ctx.bins.codex, ['mcp', 'get', name, '--json'], { env: { ...process.env, HOME: ctx.home }, cwd });
+    if (r.code === 0) {
+      try {
+        const j = JSON.parse(r.stdout);
+        const t = j.transport || {};
+        const type = t.type === 'streamable_http' ? 'http' : t.type === 'stdio' ? 'stdio' : '?';
+        return {
+          via: 'codex',
+          entry: { type, url: t.url || null, command: t.command || null, enabled: j.enabled !== false },
+          why,
+          code,
+        };
+      } catch {
+        /* an answer that is not the entry: the file is the fallback */
+      }
+    } else if (/No MCP server named/.test(r.out)) return { via: 'codex', entry: null, why, code };
+    else {
+      via = 'error';
+      why = tail(r.out.trim().replace(/\s+/g, ' '));
+      code = r.code;
+    }
+  }
+  const s = codexScrape(ctx, name);
+  return { via, entry: s ? { ...s, enabled: null } : null, why, code };
+}
+
+/** How a failed `codex mcp get` ended, in words, for the probe's lines: a CLI that fails and prints nothing is said to have said
+ *  nothing, never quoted as an empty "()" or "Codex said: .". */
+const codexExit = (l) => (l.code === null ? 'no exit status' : `exit ${l.code}`);
+
+const codexRegistration = (ctx, name, cwd = ctx.home) => codexLookup(ctx, name, cwd).entry;
+
+/** The names of the [mcp_servers.<name>] tables in the user's Codex config and in the pot's own .codex/config.toml (the table
+ *  form, as codexScrape reads it). The probe asks `codex mcp get` for each, which sends nothing anywhere. */
+function codexTableNames(ctx, pot) {
+  const names = new Set();
+  for (const f of [codexConfigFile(ctx), path.join(pot, '.codex', 'config.toml')]) {
+    let text;
+    try {
+      text = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const m of text.matchAll(/^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))[\].]/gm)) names.add(m[1] || m[2]);
+  }
+  return [...names];
+}
+
+function registerCodex(ctx, def) {
+  const cur = codexRegistration(ctx, def.name);
+  if (cur && cur.type === 'http' && cur.url === def.url) {
+    ctx.say(
+      `registered: ${def.name} with Codex, ${def.url} (already)${cur.enabled === false ? '; the entry is turned off in Codex (enabled = false), so a session will not load the service: remove that line, or set it to true, in the Codex config that holds it' : ''}`,
+    );
+    return false;
+  }
+  const env = { ...process.env, HOME: ctx.home };
+  if (cur) {
+    const r = run(ctx.bins.codex, ['mcp', 'remove', def.name], { env, cwd: ctx.home });
+    if (r.code !== 0) throw halt(`codex mcp remove ${def.name} failed (exit ${r.code}): ${tail(r.out)}`);
+  }
+  const r = run(ctx.bins.codex, ['mcp', 'add', def.name, '--url', def.url], { env, cwd: ctx.home });
+  if (r.code !== 0) throw halt(`codex mcp add failed (exit ${r.code}): ${tail(r.out)}; the service runs, unregistered`);
+  const now = codexRegistration(ctx, def.name);
+  if (!(now && now.type === 'http' && now.url === def.url))
+    throw halt(`codex mcp add said done, but ${codexConfigFile(ctx)} does not name ${def.name} at ${def.url}`);
+  ctx.say(`registered: ${def.name} with Codex, ${def.url}`);
+  return true;
+}
+
+function unregisterCodex(ctx, rec) {
+  const cur = codexRegistration(ctx, rec.name);
+  if (!cur) return ctx.say(`registered: ${rec.name} is not registered with Codex; nothing to remove`);
+  if (!(cur.type === 'http' && cur.url === rec.url))
+    return ctx.say(
+      `registered: ${rec.name} now points at ${cur.url || cur.command} in Codex, not this service; left as it is`,
+    );
+  const r = run(ctx.bins.codex, ['mcp', 'remove', rec.name], {
+    env: { ...process.env, HOME: ctx.home },
+    cwd: ctx.home,
+  });
+  if (r.code !== 0) throw halt(`codex mcp remove ${rec.name} failed (exit ${r.code}): ${tail(r.out)}`);
+  ctx.say(`registered: ${rec.name} removed from Codex`);
+}
+
 function register(ctx, def) {
+  if (ctx.client === 'codex') return registerCodex(ctx, def);
   const cur = registration(ctx, def.name);
   if (cur && cur.type === 'http' && cur.url === def.url) {
     ctx.say(`registered: ${def.name} at user level, ${def.url} (already)`);
@@ -712,6 +850,7 @@ function register(ctx, def) {
 }
 
 function unregister(ctx, rec) {
+  if ((rec.client || 'claude') === 'codex') return unregisterCodex(ctx, rec);
   const cur = registration(ctx, rec.name);
   if (!cur) return ctx.say(`registered: ${rec.name} is not registered; nothing to remove`);
   if (!(cur.type === 'http' && cur.url === rec.url))
@@ -1076,7 +1215,89 @@ export async function connectionRows(ctx, facts) {
       `${ans.why}; its log: ${path.join(serviceDir(ctx.home, facts.garden), 'mcp.err.log')}`,
       'not running',
     ]);
-  // the registration
+  // the registration: with Codex when the record says so, and then Claude's config, trust and shadows are not asked about
+  if ((rec.client || 'claude') === 'codex') {
+    const clk = codexLookup(ctx, rec.name);
+    const creg = clk.entry;
+    if (!creg)
+      rows.push(['FAIL', 'mcp registered', `${rec.name} is not registered with Codex: ${step}`, 'not registered']);
+    else if (creg.type !== 'http' || creg.url !== rec.url)
+      rows.push([
+        'FAIL',
+        'mcp registered',
+        `${rec.name} is registered with Codex as ${creg.type} ${creg.url || creg.command}, not ${rec.url}: ${step}`,
+        'not registered',
+      ]);
+    else {
+      rows.push(['ok', 'mcp registered', `${rec.name} with Codex, ${rec.url} (${codexConfigFile(ctx)})`]);
+      // what a Codex session opened in this pot gets: its own switch, and a pot-level entry that would shadow the service
+      const hl = codexLookup(ctx, rec.name, facts.pot);
+      const here = hl.via === 'codex' ? hl.entry : null;
+      if (hl.via === 'error' && clk.via === 'codex')
+        rows.push([
+          'FAIL',
+          'mcp in this pot',
+          `codex mcp get ${rec.name} fails in ${facts.pot} though the user's config answers, so a Codex session there would not load its config cleanly; ${hl.why ? `Codex said: ${hl.why}` : `Codex said nothing (${codexExit(hl)})`}. Look at the pot's own .codex/config.toml`,
+          'not loadable',
+        ]);
+      else if (here?.enabled === false)
+        rows.push([
+          'FAIL',
+          'mcp in this pot',
+          `${rec.name} is turned off in Codex (enabled = false under [mcp_servers.${rec.name}]): remove that line, or set it to true, in the Codex config that holds it`,
+          'turned off',
+        ]);
+      else if (here && (here.type !== 'http' || here.url !== rec.url))
+        rows.push([
+          'FAIL',
+          'mcp shadowed',
+          `a Codex session in ${facts.pot} gets ${rec.name} as ${here.type} ${here.url || here.command}, not ${rec.url}: the pot's own .codex/config.toml (or a project-level one above it) names it; remove that entry`,
+          'shadowed',
+        ]);
+      else if (here)
+        rows.push(['ok', 'mcp in this pot', `${rec.name} is not turned off or shadowed for a Codex session here`]);
+      else
+        rows.push([
+          'note',
+          'mcp in this pot',
+          `${hl.via === 'error' ? `codex mcp get ${hl.why ? `failed (${hl.why})` : `failed and said nothing (${codexExit(hl)})`}` : hl.via === 'codex' ? 'codex mcp get found no entry for the service in this pot' : 'no codex CLI answered'}, so whether Codex has it turned off or shadowed in this pot was not checked`,
+        ]);
+    }
+    // another garden's MCP, live in this pot's Codex sessions too (Codex's user config is global to every session). The names come
+    // from the tables of the user's config and the pot's own; `codex mcp get` says what each is for a session here and sends
+    // nothing (`codex mcp list` asks every HTTP server in the config, remote ones too: four GETs each in 0.147.0), and a session
+    // of our own goes only to a local server, as in the Claude branch
+    const others = [];
+    if (ctx.bins.codex) {
+      for (const n of codexTableNames(ctx, facts.pot)) {
+        if (n === rec.name) continue;
+        const ol = codexLookup(ctx, n, facts.pot);
+        const e = ol.via === 'codex' ? ol.entry : null;
+        if (
+          !e ||
+          e.enabled === false ||
+          e.type !== 'http' ||
+          !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(String(e.url))
+        )
+          continue;
+        try {
+          const sess = await mcpSession(e.url, 3000);
+          const t = await sess.tools();
+          await sess.close();
+          if (t.includes('bonsai_session_start')) others.push(n);
+        } catch {
+          /* not answering: not live here */
+        }
+      }
+    }
+    if (others.length)
+      rows.push([
+        'note',
+        'other gardens',
+        `${others.join(', ')} also serve${others.length === 1 ? 's' : ''} a garden in this pot's Codex sessions; turn ${others.length === 1 ? 'it' : 'them'} off (enabled = false in Codex's config), so a kin enters only ${rec.name}`,
+      ]);
+    return { rows, rec };
+  }
   const reg = registration(ctx, rec.name);
   if (!reg)
     rows.push([
@@ -1191,6 +1412,10 @@ async function cmdInstall(ctx) {
   const rec = readRecord(ctx.home, facts.garden);
   const others = otherRecords(ctx.home, facts.garden);
   // every precondition before anything is written: a refusal never writes
+  if (rec?.status === 'installed' && (rec.client || 'claude') !== ctx.client)
+    throw refuse(
+      `this garden's service is registered with ${rec.client || 'claude'}; uninstall it first to register it with ${ctx.client}`,
+    );
   const clash = others.find((r) => r.name === name);
   if (clash)
     throw refuse(`the name ${name} is the service of garden ${clash.garden} (${clash.pot}); name this one with --name`);
@@ -1217,7 +1442,11 @@ async function cmdInstall(ctx) {
     throw refuse(
       'no uv on this host (https://docs.astral.sh/uv/), so the server cannot run; install uv, or name it with BONSAI_UV',
     );
-  if (!ctx.bins.claude)
+  if (ctx.client === 'codex' && !ctx.bins.codex)
+    throw refuse(
+      "no codex CLI on this host, so the service cannot be registered with Codex; install Codex's CLI, or name it with BONSAI_CODEX",
+    );
+  if (ctx.client === 'claude' && !ctx.bins.claude)
     throw refuse(
       "no claude CLI on this host, so the service cannot be registered at user level; install Claude Code's CLI, or name it with BONSAI_CLAUDE",
     );
@@ -1244,12 +1473,13 @@ async function cmdInstall(ctx) {
     );
   const port = await choosePort(ctx, facts, rec, others);
   // a user-level entry under this name is this garden's only when it points where this garden's service is or was
-  const reg = registration(ctx, name);
+  const codex = ctx.client === 'codex';
+  const reg = codex ? codexRegistration(ctx, name) : registration(ctx, name);
   const url = `http://127.0.0.1:${port}/`;
   if (reg && !(reg.type === 'http' && (reg.url === url || (rec && reg.url === rec.url))))
     throw refuse(
-      `a user-level MCP named ${name} is already registered (${reg.type} ${reg.url || reg.command}) and is not this garden's service; ` +
-        'name this one with --name, or remove that one yourself (claude mcp remove --scope user <name>)',
+      `${codex ? 'a Codex MCP' : 'a user-level MCP'} named ${name} is already registered (${reg.type} ${reg.url || reg.command}) and is not this garden's service; ` +
+        `name this one with --name, or remove that one yourself (${codex ? 'codex mcp remove <name>' : 'claude mcp remove --scope user <name>'})`,
     );
   const wait = ctx.f.wait !== undefined ? Number(ctx.f.wait) : 90;
   if (!Number.isFinite(wait) || wait < 0) throw usage('--wait <seconds>');
@@ -1278,6 +1508,7 @@ async function cmdInstall(ctx) {
     rt: facts.rt,
     'rt-version': `${facts.rtName} ${facts.rtVersion}`,
     hash: def.hash,
+    ...(codex ? { client: 'codex' } : {}),
     retired: rec?.retired || null,
     skills: rec?.skills || [],
     installed: rec?.status === 'installed' ? rec.installed : new Date().toISOString(),
@@ -1289,7 +1520,7 @@ async function cmdInstall(ctx) {
   if (launcher === 'launchd') next['plist-sha256'] = sha256(fs.readFileSync(plistFile(ctx, label)));
   writeRecord(ctx.home, next); // the record follows the launcher at once: a later halt leaves a record that uninstall can read
   // the pot's per-session entry, retired so no session sees two garden MCPs
-  const retired = retireShadow(ctx, def);
+  const retired = codex ? null : retireShadow(ctx, def); // Codex reads no .mcp.json of the pot's: nothing shadows it
   if (retired) {
     next.retired = retired;
     // recorded at once, before anything else can halt: a halt in registration left the pot's .mcp.json retired and the
@@ -1300,7 +1531,7 @@ async function cmdInstall(ctx) {
   register(ctx, def);
   // skills
   const prior = (rec?.skills || []).filter((s) => s.made).map((s) => s.slug);
-  const { linked, steps } = linkSkills(ctx, prior);
+  const { linked, steps } = codex ? { linked: [], steps: [] } : linkSkills(ctx, prior); // the links are Claude's .claude/skills
   next.skills = linked;
   writeRecord(ctx.home, next);
   // does it answer?
@@ -1312,13 +1543,19 @@ async function cmdInstall(ctx) {
         `; read ${path.join(serviceDir(ctx.home, facts.garden), 'mcp.err.log')}, then install again, or uninstall`,
     );
   ctx.say(`answers: ${def.url} as ${ans.info.name}`);
-  ctx.say(
-    `next: in a new session opened in ${facts.pot}, /mcp lists ${name} · connected` +
-      (linked.length
-        ? `, and ${linked.map((l) => `/${l.slug}`).join(', ')} wake${linked.length === 1 ? 's' : ''} its kin`
-        : '') +
-      `; then: node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} probe --pot ${facts.pot}`,
-  );
+  if (codex)
+    ctx.say(
+      `next: in a new Codex session, codex mcp get ${name} lists it; then: node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} probe --pot ${facts.pot}`,
+    );
+  else {
+    ctx.say(
+      `next: in a new session opened in ${facts.pot}, /mcp lists ${name} · connected` +
+        (linked.length
+          ? `, and ${linked.map((l) => `/${l.slug}`).join(', ')} wake${linked.length === 1 ? 's' : ''} its kin`
+          : '') +
+        `; then: node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} probe --pot ${facts.pot}`,
+    );
+  }
   if (steps.length) ctx.say(`open: ${steps.length} step(s) above are yours (STEP)`);
 }
 
@@ -1356,6 +1593,19 @@ function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep, wheels })
   row('check', `wheels: ${wheels.line}`);
   row('download', fetchLine(fetch));
   row('write', def.env.PYTHONPYCACHEPREFIX, "the server's bytecode, outside rt");
+  if (ctx.client === 'codex') {
+    if (reg && reg.type === 'http' && reg.url === def.url)
+      row('note', `${def.name} is registered with Codex already`, 'not written again');
+    else
+      row(
+        'write',
+        codexConfigFile(ctx),
+        `through codex mcp add ${def.name} --url ${def.url} (Codex's registration; Claude is not touched)`,
+      );
+    row('way back', `node ${path.join(facts.rt, 'tools', 'rt', 'host-service.mjs')} uninstall --pot ${facts.pot}`);
+    ctx.say('then: the same line without --explain does it, and says each step as it goes');
+    return;
+  }
   if (reg && reg.type === 'http' && reg.url === def.url)
     row('note', `${def.name} is registered at user level already`, 'not written again');
   else
@@ -1396,6 +1646,14 @@ function explainInstall(ctx, { facts, def, rec, reg, fetch, pm2Asleep, wheels })
 async function cmdLinkSkills(ctx) {
   const facts = potFacts(ctx);
   const rec = readRecord(ctx.home, facts.garden);
+  // the links are Claude's: the pot's .claude/skills. A garden installed with --client codex has none, and a kin planted
+  // into it later must not bring Claude's folder in (found in a dry run, 2026-11-09)
+  if (rec?.status === 'installed' && rec.client === 'codex') {
+    ctx.say(
+      "skill: this garden's service is registered with Codex; the links are Claude's .claude/skills in the pot, and are not made (install --client codex leaves them alone)",
+    );
+    return;
+  }
   const prior = (rec?.skills || []).filter((s) => s.made).map((s) => s.slug);
   const { linked } = linkSkills(ctx, prior);
   if (rec) writeRecord(ctx.home, { ...rec, skills: linked, updated: new Date().toISOString() });
@@ -1413,7 +1671,10 @@ async function cmdUninstall(ctx) {
     if (!ctx.bins.launchctl) throw refuse('this service is a LaunchAgent, and launchctl is not found');
     launchdRemove(ctx, rec);
   }
-  if (ctx.bins.claude) unregister(ctx, rec);
+  if ((rec.client || 'claude') === 'codex') {
+    if (ctx.bins.codex) unregister(ctx, rec);
+    else ctx.say(`registered: no codex CLI; remove it yourself: codex mcp remove ${rec.name}`);
+  } else if (ctx.bins.claude) unregister(ctx, rec);
   else ctx.say(`registered: no claude CLI; remove it yourself: claude mcp remove --scope user ${rec.name}`);
   unlinkSkills(ctx, rec);
   restoreShadow(ctx, rec);

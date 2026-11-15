@@ -29,6 +29,10 @@ Where the body is: the registry's `path` (a `shared:<slug>` shintai is that kin'
 repo router, so a body that moved to core is checked where it lives. A body in this repo is
 checked with the garden's keys; a body in another repo with the published keys, since it carries
 seals whose keys that repo does not hold (the gate's own --keys help, Bonsai's finding 2026-09-24).
+The same holds for a newborn in this repo whose body is sealed by the garden's guardian as custodian, when the guardian's key is in another repo.
+
+A kin that is forming also has an installed package whose own check needs the guardian's key home named (core-plugin 2.24.8).
+That check is run here, with core's verifier, and the line gains `· package guardian-ok` (see "a newborn" below).
 
     python3 integrity_line.py <slug> [<slug> …]     # one line each; exit 1 if any is not ok
 """
@@ -38,13 +42,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import signer as _signer
+import skill_install as _skill_install
 
 # (repo name, absolute path) for a repo-relative path in the hub's namespace
 Resolver = Callable[[str], "tuple[str, Path]"]
@@ -97,8 +104,95 @@ def _first(r: subprocess.CompletedProcess) -> str:
     )
 
 
-def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+def _run(argv: list[str], timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+# --- a newborn: held by a guardian whose key is in another repository ---------------------------------------------------------
+# A kin that is forming has a first body sealed by the garden's guardian as custodian (AGENTS.md, Every kin). The guardian's
+# identity bundle can sit in another repository than the kin's (a guardian's in one repository, a newborn's in another), and two checks read a
+# key from the one root they are given. Both answered unknown-signer for a newborn on 2026-11-08:
+#   * the shintai check with the garden's keys: a guardian-sealed newborn is asked with the published keys instead, which
+#     know the guardian (the same rule as a body in another repo);
+#   * the installed package's own check (verify-manifest.mjs --keys garden): it needs the key home NAMED
+#     (BONSAI_KEY_HOME, core-plugin 2.24.8), and the newborn's SKILL.md promises "or wake through the garden MCP, which runs
+#     it for you". So this runs it: core's verifier on the installed folder, $BONSAI_GARDEN the served garden, the key home the
+#     repo the router places the guardian's key in. Named by the registry's router, never searched for, never inherited from
+#     the daemon's environment. The word is read by name: guardian-ok, nothing else (not ok, not a prefix).
+# An installed OWNER's package is not run here: its plain line works anywhere and is the kin's own to run.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_VERIFY_MANIFEST = Path("skills") / "bonsai-garden-core-plugin" / "scripts" / "verify-manifest.mjs"
+_SIGN_SKILL = Path("skills") / "bonsai-garden-sign"
+
+
+def _row_path(root: Path, slug: str) -> str:
+    """The registry's `path` for `slug` in `root`, else agents/<slug>; a path that is absolute or climbs is not believed."""
+    try:
+        data = json.loads((root / "agents" / "registry.json").read_text("utf-8"))["agents"]
+        row = next((a for a in (data.values() if isinstance(data, dict) else data) if a.get("slug") == slug), None)
+    except (OSError, ValueError, KeyError, AttributeError):
+        row = None
+    rel = row.get("path") if row else None
+    if not isinstance(rel, str) or not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+        rel = f"agents/{slug}"
+    return rel
+
+
+def _custodian_of(body: Path) -> str | None:
+    """The signer of the body's SKILL.md seal when it is sealed as custodian (a newborn held by their guardian), else None."""
+    sc, _why = _signer.find_sidecar(body / "SKILL.md")
+    if sc is None:
+        return None
+    try:
+        d = json.loads(sc.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    who = d.get("signer") if isinstance(d, dict) else None
+    return who if isinstance(d, dict) and d.get("role") == "custodian" and isinstance(who, str) and _SLUG.match(who) else None
+
+
+def _guardian_elsewhere(body: Path, repo_root: Path) -> str | None:
+    """The guardian's slug when the body is held by a guardian whose identity bundle is not in this repo, else None."""
+    who = _custodian_of(body)
+    if who is None:
+        return None
+    return None if (repo_root / _row_path(repo_root, who) / "identity" / f"{who}-public-key.bin").is_file() else who
+
+
+def _key_home(repo_root: Path, guardian: str, resolve: Resolver) -> Path | None:
+    """The root of the repo the router places `guardian`'s public key in, when that is another repo than this one; None when
+    the key is here (nothing to name) or no repo places it (nothing to name, and the verifier will say unknown-signer)."""
+    rel = _row_path(repo_root, guardian)
+    _repo, key = resolve(f"{rel}/identity/{guardian}-public-key.bin")
+    if not key.is_file():
+        return None
+    home = key.parents[len(Path(rel).parts) + 1]
+    return None if home.resolve() == repo_root.resolve() else home
+
+
+def _installed_newborns(slug: str) -> list[tuple[Path, str]]:
+    """(installed folder, custodian) for each installed copy of the kin whose MANIFEST.json names a custodian."""
+    out, seen = [], set()
+    for p in _skill_install.installed_paths(slug):
+        d = p.parent
+        try:
+            m = json.loads((d / "MANIFEST.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        c = m.get("custodian") if isinstance(m, dict) else None
+        if isinstance(c, str) and _SLUG.match(c) and d.resolve() not in seen:
+            seen.add(d.resolve())
+            out.append((d, c))
+    return out
+
+
+def _run_package(folder: Path, verifier: Path, sign_skill: Path, env: dict, timeout: float) -> subprocess.CompletedProcess:
+    """Core's verify-manifest.mjs on the installed folder, staged beside the signer as a package lays it out, never the
+    package's own copy (a claim inside the thing being checked is not a check)."""
+    with tempfile.TemporaryDirectory(prefix="integrity-pkg-") as tmp:
+        shutil.copy2(verifier, Path(tmp) / verifier.name)
+        (Path(tmp) / "bonsai-garden-sign").symlink_to(sign_skill, target_is_directory=True)
+        return _run(["node", str(Path(tmp) / verifier.name), "--dir", str(folder), "--keys", "garden"], timeout, env)
 
 
 # --- the gardener's pin for a pot ---------------------------------------------------------------------------------------
@@ -264,7 +358,15 @@ def line(
         about = next((p for p in abouts if p.suffix == ".md"), abouts[0] if abouts else None)
         if about is None:
             return f"STOP — no constitution (references/about-me.*) in {body} — {STOP_TAIL}"
-        keys = "pot" if pot is not None else ("garden" if local else "published")
+        # a body in this repo is asked with the garden's keys, unless the guardian's key lives in another repo (a newborn)
+        keys = "pot" if pot is not None else ("garden" if local and not _guardian_elsewhere(body, repo_root) else "published")
+        # an installed newborn's package: core's verifier, run here with the key home named from the router (not for a pot)
+        pkgs = _installed_newborns(slug) if pot is None else []
+        verifier = conformance.parent.parent / _VERIFY_MANIFEST
+        if pkgs and not verifier.is_file():
+            return f"STOP — cannot check: {verifier} is missing, and an installed newborn's package needs it — {STOP_TAIL}"
+        if pkgs and not shutil.which("node"):
+            return f"STOP — cannot check: no node on this host to run the installed package's check — {STOP_TAIL}"
         py = sys.executable or "python3"
         potflags = []
         lab = False
@@ -294,8 +396,20 @@ def line(
                 str(body),
             ],
         }
-        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        pkg_env = []
+        for folder, guardian in pkgs:
+            env = {k: v for k, v in os.environ.items() if k != "BONSAI_KEY_HOME"}  # named from the router, never inherited
+            env["BONSAI_GARDEN"] = str(repo_root.resolve())
+            home = _key_home(repo_root, guardian, resolve)
+            if home is not None:
+                env["BONSAI_KEY_HOME"] = str(home)
+            pkg_env.append((folder, env))
+        with ThreadPoolExecutor(max_workers=len(jobs) + len(pkg_env)) as ex:
             futs = {k: ex.submit(_run, argv, timeout) for k, argv in jobs.items()}
+            for i, (folder, env) in enumerate(pkg_env):
+                futs[f"package {i}"] = ex.submit(
+                    _run_package, folder, verifier, conformance.parent.parent / _SIGN_SKILL, env, timeout
+                )
             res = {}
             for k, f in futs.items():
                 try:
@@ -336,6 +450,18 @@ def line(
                     f"shintai FAIL ({keys} keys; {n} finding{'s' if n != 1 else ''}"
                     f"{': ' + shown if shown else ''}{'; …' if n > 1 else ''})"
                 )
+        if pkg_env:  # the word by name: a newborn's package says guardian-ok, never a bare ok, never a prefix
+            said = []
+            for i in range(len(pkg_env)):
+                r = res[f"package {i}"]
+                if r is None:
+                    said.append(f"package not checked (timed out after {timeout:.0f}s)")
+                elif r.returncode == 0 and (_first(r).split() or [""])[0] == "guardian-ok":
+                    continue
+                else:
+                    said.append(f"package {_first(r)}")
+            ok = ok and not said
+            parts.extend(dict.fromkeys(said) if said else ["package guardian-ok"])
         if pot is not None:  # a pot's line says what vouched; a rehearsal says it is one
             parts.insert(
                 0,

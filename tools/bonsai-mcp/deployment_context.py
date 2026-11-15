@@ -1,5 +1,10 @@
 # ---
 # id: 01M3BT3KSC8TTPVPSFYHSXSA6R
+# title: Deployment context — what the boot payload says about the host the server runs on
+# type: script
+# tended-by: baisai
+# created: 2026-09-14
+# updated: 2026-11-08
 # ---
 """
 Deployment context for the boot payload (2026-09).
